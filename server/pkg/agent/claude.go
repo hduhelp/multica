@@ -87,6 +87,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// from cwd regardless and are not affected by either mode.
 	isolateClaudeConfig := opts.SkillsLocal == "ignore"
 	var claudeConfigDir string
+	var hostConfigDir string
 	var claudeConfigCleanup func()
 	if isolateClaudeConfig {
 		// Resolve the *effective* Claude config source before we strip
@@ -95,8 +96,13 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// Mirroring `~/.claude` blindly when the operator has explicitly
 		// pointed Claude at a different config dir (e.g. a managed install)
 		// would copy the wrong credentials into the scratch dir and break
-		// auth — see the second Must Fix in MUL-2603 review.
-		hostConfigDir := resolveHostClaudeConfigDir(b.cfg.Env)
+		// auth — see the second Must Fix in MUL-2603 review. The same
+		// value is threaded through to buildClaudeEnv so the macOS keychain
+		// passthrough can refuse to inject the default OAuth token into a
+		// custom-dir isolated child (the unsuffixed keychain entry does not
+		// match the suffixed entry a custom CLAUDE_CONFIG_DIR would resolve
+		// to, so reading it would inject a different account's token).
+		hostConfigDir = resolveHostClaudeConfigDir(b.cfg.Env)
 		dir, cleanup, err := newIsolatedClaudeConfigDir(opts.Cwd, hostConfigDir, b.cfg.Logger)
 		if err != nil {
 			cancel()
@@ -111,7 +117,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 	}()
 
-	cmd.Env = buildClaudeEnv(b.cfg.Env, claudeConfigDir)
+	cmd.Env = buildClaudeEnv(b.cfg.Env, claudeConfigDir, hostConfigDir, b.cfg.Logger)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -626,22 +632,161 @@ func buildEnv(extra map[string]string) []string {
 // CLAUDE_CONFIG_DIR so a daemon-host env var cannot accidentally win
 // the override race. Callers in "merge" mode pass "" and behaviour
 // matches the pre-MUL-2603 buildEnv path.
-func buildClaudeEnv(extra map[string]string, claudeConfigDir string) []string {
+//
+// hostConfigDir is the *effective* host Claude config source the scratch
+// dir was mirrored from (see resolveHostClaudeConfigDir). It is used as
+// the gate for the macOS keychain OAuth passthrough: only the default
+// `$HOME/.claude` host source matches the unsuffixed
+// `Claude Code-credentials` keychain entry, so for custom dirs we
+// deliberately skip the passthrough rather than inject the daemon
+// user's default account into a managed/custom-dir agent.
+func buildClaudeEnv(extra map[string]string, claudeConfigDir, hostConfigDir string, logger *slog.Logger) []string {
+	return buildClaudeEnvWith(extra, claudeConfigDir, hostConfigDir, logger, os.UserHomeDir, readHostClaudeOAuthToken)
+}
+
+// buildClaudeEnvWith is the testable seam behind buildClaudeEnv. Tests
+// inject a homeDir resolver and readOAuthToken closure so they can
+// exercise the auth passthrough — including the default-vs-custom
+// hostConfigDir gate — without touching the real macOS keychain or
+// mutating $HOME.
+func buildClaudeEnvWith(
+	extra map[string]string,
+	claudeConfigDir, hostConfigDir string,
+	logger *slog.Logger,
+	homeDir func() (string, error),
+	readOAuthToken func() (string, error),
+) []string {
 	env := mergeEnv(os.Environ(), extra)
 	if claudeConfigDir == "" {
 		return env
 	}
 	// Drop any CLAUDE_CONFIG_DIR already in the slice (from os.Environ or
 	// from custom_env) before appending the isolated override so the last
-	// entry wins deterministically.
+	// entry wins deterministically. Track whether the operator already
+	// pinned OAuth / API-key auth via env so we know whether to add a
+	// keychain-sourced token below. "Pinned" means the value is non-empty:
+	// an empty `ANTHROPIC_API_KEY=` / `CLAUDE_CODE_OAUTH_TOKEN=` leaks in
+	// from `os.Environ()` on hosts whose login shell unsets it that way,
+	// and treating that as an explicit auth choice would silently strand
+	// the isolated child at "Not logged in" (MUL-2603 review follow-up).
 	filtered := env[:0]
+	hasOAuthToken := false
+	hasAnthropicKey := false
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "CLAUDE_CONFIG_DIR=") {
 			continue
 		}
+		if v, ok := strings.CutPrefix(entry, "CLAUDE_CODE_OAUTH_TOKEN="); ok {
+			if v == "" {
+				// Empty `CLAUDE_CODE_OAUTH_TOKEN=` is noise (login-shell
+				// quirk, stale custom_env entry) — drop so it cannot shadow
+				// a keychain-injected token later in the slice on platforms
+				// where the libc env lookup picks the first match.
+				continue
+			}
+			hasOAuthToken = true
+		}
+		if v, ok := strings.CutPrefix(entry, "ANTHROPIC_API_KEY="); ok {
+			if v == "" {
+				// Same treatment as the OAuth token: empty `ANTHROPIC_API_KEY=`
+				// must not pose as a pinned API-key auth choice. Drop so the
+				// child does not see a confusing empty value either.
+				continue
+			}
+			hasAnthropicKey = true
+		}
 		filtered = append(filtered, entry)
 	}
-	return append(filtered, "CLAUDE_CONFIG_DIR="+claudeConfigDir)
+	filtered = append(filtered, "CLAUDE_CONFIG_DIR="+claudeConfigDir)
+
+	// Auth passthrough — only meaningful in isolation mode, and only on
+	// platforms where the child CLI cannot follow the host's auth on its
+	// own. On Linux/Windows the OAuth token lives in
+	// `$CLAUDE_CONFIG_DIR/.credentials.json` and is already symlinked via
+	// mirrorHostClaudeExceptSkills, so readHostClaudeOAuthToken is a
+	// no-op there. On macOS Claude Code 2.x scopes the keychain entry by
+	// SHA-256(CLAUDE_CONFIG_DIR)[:8]; isolating the config dir changes
+	// that suffix, so the child cannot find the host token even though it
+	// is sitting in the default `Claude Code-credentials` entry. Surface
+	// the access token via CLAUDE_CODE_OAUTH_TOKEN so the child skips
+	// keychain lookup entirely (MUL-2603 follow-up regression).
+	//
+	// Host-dir gate: the reader returns the *unsuffixed*
+	// `Claude Code-credentials` entry, which is only correct when the
+	// host config source is the default `$HOME/.claude`. A custom
+	// CLAUDE_CONFIG_DIR (set via agent custom_env or daemon-host env)
+	// maps to `Claude Code-credentials-<hash>` for a *different* account.
+	// Injecting the unsuffixed entry there would cross-pollute the
+	// managed/custom agent with the daemon user's default OAuth account
+	// — the same "do not cross accounts" boundary mirrorHostClaudeJSONIfMissing
+	// already enforces for `.claude.json`. So for custom/parent dirs we
+	// deliberately skip the passthrough and let the child rely on
+	// whatever auth lives inside the custom dir (`.credentials.json`,
+	// `apiKeyHelper`, etc.) or fall through to ANTHROPIC_API_KEY.
+	//
+	// Security boundary (Bash subprocess only): CLAUDE_CODE_OAUTH_TOKEN
+	// is the host's claude.ai OAuth access token. We rely on Claude
+	// Code itself scrubbing it from the env it passes to the
+	// model-driven Bash tool subprocess — the property is locked in by
+	// TestClaudeCLIScrubsOAuthTokenFromBashSubprocess, which boots the
+	// real CLI with a canary OAuth token + a non-secret control var,
+	// plus two per-run random nonces passed *only* via env vars (never
+	// in the prompt text). The assertions are: the canary is absent
+	// from the transcript, the unset-nonce appears (proving a real Bash
+	// subprocess ran AND saw CLAUDE_CODE_OAUTH_TOKEN as empty), and the
+	// control-nonce appears (proving the scrub is targeted, not a
+	// side-effect of "Bash gets no env"). Using nonces — instead of
+	// hard-coded markers that could be paraphrased back from the
+	// prompt — is what makes the proof actually pin a real subprocess.
+	// Hook subprocesses are NOT covered by this assertion: we have not
+	// reproduced the env shape they receive, so the contract here
+	// intentionally narrows to Bash; if a future hook-using feature
+	// matters we must add a hook-side regression before relying on the
+	// same env-scrub there. If the existing test ever flips (upstream
+	// CLI change), this passthrough must move off env vars (e.g. a
+	// short-lived `apiKeyHelper` script) before merging.
+	//
+	// Precedence (highest wins): operator-pinned CLAUDE_CODE_OAUTH_TOKEN
+	// in custom_env, then ANTHROPIC_API_KEY (the user explicitly chose
+	// API-key auth — do not silently override with OAuth), then the
+	// keychain token. "Pinned" is gated on a non-empty value above so an
+	// empty `KEY=` inherited from os.Environ does not pose as an explicit
+	// choice and disable the keychain reader.
+	if !hasOAuthToken && !hasAnthropicKey && readOAuthToken != nil &&
+		isDefaultHostClaudeConfigDir(hostConfigDir, homeDir) {
+		token, err := readOAuthToken()
+		if err != nil && logger != nil {
+			logger.Warn("claude: read host oauth token failed",
+				"error", err,
+			)
+		}
+		if token != "" {
+			filtered = append(filtered, "CLAUDE_CODE_OAUTH_TOKEN="+token)
+		}
+	}
+	return filtered
+}
+
+// isDefaultHostClaudeConfigDir reports whether hostConfigDir refers to the
+// default per-user Claude config path `$HOME/.claude`. The macOS keychain
+// passthrough relies on this gate because the unsuffixed
+// `Claude Code-credentials` entry only matches that default; custom
+// CLAUDE_CONFIG_DIR values map to suffixed entries for different accounts,
+// so reading the unsuffixed entry into a custom-dir isolated child would
+// cross-pollute accounts (see buildClaudeEnvWith for the full reasoning).
+//
+// Returns false when hostConfigDir is empty (merge mode) or when the home
+// directory cannot be resolved — both translate to "do not pull the
+// default keychain token", which is the safe default.
+func isDefaultHostClaudeConfigDir(hostConfigDir string, homeDir func() (string, error)) bool {
+	if hostConfigDir == "" || homeDir == nil {
+		return false
+	}
+	home, err := homeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	return hostConfigDir == filepath.Join(home, ".claude")
 }
 
 func mergeEnv(base []string, extra map[string]string) []string {
