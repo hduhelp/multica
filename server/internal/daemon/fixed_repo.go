@@ -67,11 +67,22 @@ func fixedRepoAssignmentForTask(task Task) (*localDirectoryAssignment, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &localDirectoryAssignment{
+	assignment := &localDirectoryAssignment{
 		Ref:       localDirectoryRef{LocalPath: absPath, DaemonID: task.RuntimeID},
 		AbsPath:   absPath,
 		RealPath:  realPath,
+		Mode:      localDirectoryModeInPlace,
 		FixedRepo: true,
 		VcsType:   normalizeFixedRepoVcsType(task.FixedRepoVcsType),
-	}, nil
+	}
+	// Worktree mode: the server flags an issue-bound task to run in an
+	// ephemeral per-issue git worktree branched off this base repo. The daemon
+	// gate re-probes git and, if the base really is a working tree, isolates the
+	// task in its own worktree keyed by IssueID (parallel across issues). A
+	// missing IssueID or non-git base falls back to in_place at the gate.
+	if task.FixedRepoWorktree && strings.TrimSpace(task.IssueID) != "" {
+		assignment.Mode = localDirectoryModeWorktree
+		assignment.IssueID = strings.TrimSpace(task.IssueID)
+	}
+	return assignment, nil
 }

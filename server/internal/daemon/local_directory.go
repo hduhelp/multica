@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -19,6 +18,28 @@ import (
 // constant — keep in sync if the type string is ever renamed.
 const localDirectoryResourceType = "local_directory"
 
+// localDirectoryMode constants mirror the handler-side values. Empty/missing
+// mode (older clients, pre-mode rows, non-worktree fixed repos) is treated as
+// in_place so existing behaviour (serialize the whole repo) is preserved.
+const (
+	localDirectoryModeInPlace  = "in_place"
+	localDirectoryModeWorktree = "worktree"
+)
+
+// normalizeLocalDirectoryMode canonicalizes a raw mode string. Empty becomes
+// in_place; unknown values return ok=false so the caller can fail closed
+// rather than silently defaulting a typo to parallel execution.
+func normalizeLocalDirectoryMode(raw string) (string, bool) {
+	switch strings.TrimSpace(raw) {
+	case "", localDirectoryModeInPlace:
+		return localDirectoryModeInPlace, true
+	case localDirectoryModeWorktree:
+		return localDirectoryModeWorktree, true
+	default:
+		return "", false
+	}
+}
+
 // localDirectoryRef mirrors the server-side ref shape for local_directory
 // project resources. Defined locally so the daemon does not have to import
 // the server handler package.
@@ -26,6 +47,7 @@ type localDirectoryRef struct {
 	LocalPath string `json:"local_path"`
 	DaemonID  string `json:"daemon_id"`
 	Label     string `json:"label,omitempty"`
+	Mode      string `json:"mode,omitempty"`
 }
 
 // localDirectoryAssignment is the resolved view of a task's local_directory
@@ -37,7 +59,12 @@ type localDirectoryRef struct {
 type localDirectoryAssignment struct {
 	Ref      localDirectoryRef
 	AbsPath  string // user-provided path, cleaned but not symlink-resolved
-	RealPath string // canonical key for the path mutex
+	RealPath string // canonical key for the in_place path mutex
+	// Mode drives the execution strategy (in_place | worktree). Never empty
+	// after resolution. IssueID is carried through so worktree mode can key its
+	// lock and worktree location per issue rather than per repository.
+	Mode    string
+	IssueID string
 	// FixedRepo marks an assignment that came from agent fixed repo mode
 	// (server-locked fixed_repo_path) rather than a local_directory project
 	// resource. Both share the daemon's in-place execution machinery (GC
@@ -64,7 +91,22 @@ func localDirectoryAssignmentForTask(task Task, daemonID string) (*localDirector
 	if task.IsLeaderTask {
 		return nil, nil
 	}
-	return findLocalDirectoryAssignment(task.ProjectResources, daemonID)
+	assignment, err := findLocalDirectoryAssignment(task.ProjectResources, daemonID)
+	if err != nil || assignment == nil {
+		return assignment, err
+	}
+	assignment.IssueID = strings.TrimSpace(task.IssueID)
+	return assignment, nil
+}
+
+// issueLockKey is the LocalPathLocker key for a worktree-mode task. Unlike
+// in_place mode (which keys on the resolved repository path and so serializes
+// every task touching the same repo), worktree mode keys on the issue: each
+// issue gets its own worktree, so tasks on different issues run in parallel
+// while tasks on the same issue — which share one worktree — serialize behind
+// this key.
+func issueLockKey(issueID string) string {
+	return "issue:" + issueID
 }
 
 // findLocalDirectoryAssignment scans the task's project resources for one of
@@ -119,10 +161,15 @@ func findLocalDirectoryAssignment(resources []ProjectResourceData, daemonID stri
 		if err != nil {
 			return nil, err
 		}
+		mode, ok := normalizeLocalDirectoryMode(ref.Mode)
+		if !ok {
+			return nil, fmt.Errorf("local_directory: unknown mode %q", ref.Mode)
+		}
 		match = &localDirectoryAssignment{
 			Ref:      ref,
 			AbsPath:  absPath,
 			RealPath: realPath,
+			Mode:     mode,
 		}
 	}
 	return match, nil
@@ -352,21 +399,6 @@ func checkDirReadWrite(dir string) error {
 	return nil
 }
 
-// isGitWorkTree reports whether path is the working tree of a git repo. The
-// daemon uses this to skip branch / worktree machinery when the user has
-// already pointed the project at their own clone — the agent operates on
-// the current branch in place. Returns false on any error (git not on PATH,
-// path not in a repo, exec failure) so the caller can treat "not a git
-// tree" and "can't tell" the same way: skip the git-specific path.
-func isGitWorkTree(ctx context.Context, path string) bool {
-	cmd := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--is-inside-work-tree")
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(out)) == "true"
-}
-
 // LocalPathLocker serialises agent tasks that share the same on-disk path.
 // The lock is owned for the entire lifetime of a task (claim → context
 // write → agent execution → result report), not just the agent execution
@@ -410,6 +442,32 @@ func (l *LocalPathLocker) Holder(realPath string) string {
 	entry.mu2.Lock()
 	defer entry.mu2.Unlock()
 	return entry.holderID
+}
+
+// TryAcquire takes the lock only when it is immediately available. It is used
+// by background maintenance (GC worktree prune) that must participate in the
+// same exclusion protocol as tasks without parking the whole GC pass behind a
+// long-running agent. ok=false means another caller owns the key.
+func (l *LocalPathLocker) TryAcquire(realPath, taskID string) (release func(), ok bool) {
+	if realPath == "" || taskID == "" {
+		return nil, false
+	}
+
+	l.mu.Lock()
+	entry, exists := l.locks[realPath]
+	if !exists {
+		entry = &pathLockEntry{}
+		l.locks[realPath] = entry
+	}
+	l.mu.Unlock()
+
+	if !entry.mu.TryLock() {
+		return nil, false
+	}
+	entry.mu2.Lock()
+	entry.holderID = taskID
+	entry.mu2.Unlock()
+	return l.releaser(realPath, entry), true
 }
 
 // Acquire takes the lock for realPath on behalf of taskID. If the lock is

@@ -81,6 +81,11 @@ type AgentResponse struct {
 	FixedRepoPaths         []string                   `json:"fixed_repo_paths"`
 	FixedRepoVcsType       string                     `json:"fixed_repo_vcs_type"`
 	FixedRepoCleanupScript *string                    `json:"fixed_repo_cleanup_script"`
+	// FixedRepoWorktree opts a git-backed fixed-repo agent into worktree mode:
+	// each issue-bound task runs in an ephemeral per-issue git worktree branched
+	// off the base repo, so concurrency parallelizes instead of serializing on
+	// the single path. Only meaningful with FixedRepoVcsType == "git".
+	FixedRepoWorktree bool `json:"fixed_repo_worktree"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
@@ -201,6 +206,7 @@ func agentToResponse(a db.Agent) AgentResponse {
 		FixedRepoPaths:           decodeStringSliceJSON(a.FixedRepoPaths),
 		FixedRepoVcsType:         fixedRepoVcsType,
 		FixedRepoCleanupScript:   textToPtr(a.FixedRepoCleanupScript),
+		FixedRepoWorktree:        a.FixedRepoWorktree,
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ComposioToolkitAllowlist: composioAllowlist,
 		OwnerID:                  uuidToPtr(a.OwnerID),
@@ -261,7 +267,7 @@ func normalizeFixedRepoPaths(paths []string) []string {
 	return out
 }
 
-func validateFixedRepoConfig(enabled bool, paths []string, vcsType string, cleanupScript *string, runtimeMode string) error {
+func validateFixedRepoConfig(enabled bool, paths []string, vcsType string, cleanupScript *string, worktree bool, runtimeMode string) error {
 	if vcsType == "" {
 		vcsType = defaultFixedRepoVcsType
 	}
@@ -280,6 +286,11 @@ func validateFixedRepoConfig(enabled bool, paths []string, vcsType string, clean
 		return fmt.Errorf("fixed_repo_cleanup_script must be %d characters or fewer", maxFixedRepoCleanupScriptBytes)
 	}
 	if !enabled {
+		// Worktree mode is meaningless without fixed repo mode; reject the
+		// contradictory combination so a stale toggle can't silently persist.
+		if worktree {
+			return fmt.Errorf("fixed_repo_worktree requires fixed_repo_enabled")
+		}
 		return nil
 	}
 	if runtimeMode != "local" {
@@ -287,6 +298,18 @@ func validateFixedRepoConfig(enabled bool, paths []string, vcsType string, clean
 	}
 	if len(paths) == 0 {
 		return fmt.Errorf("fixed_repo_paths is required when fixed_repo_enabled is true")
+	}
+	if worktree {
+		// Worktree mode branches an ephemeral per-issue worktree off ONE base
+		// git repo. Only git can do that (perforce/none/custom can't), and a
+		// single base keeps the semantics unambiguous — extra paths would be
+		// silently ignored, which reads as a bug.
+		if vcsType != "git" {
+			return fmt.Errorf("fixed_repo_worktree requires fixed_repo_vcs_type 'git', got %q", vcsType)
+		}
+		if len(paths) != 1 {
+			return fmt.Errorf("fixed_repo_worktree requires exactly one fixed_repo_paths entry (the base repo), got %d", len(paths))
+		}
 	}
 	return nil
 }
@@ -503,6 +526,11 @@ type AgentTaskResponse struct {
 	FixedRepoPath          string `json:"fixed_repo_path,omitempty"`
 	FixedRepoVcsType       string `json:"fixed_repo_vcs_type,omitempty"`
 	FixedRepoCleanupScript string `json:"fixed_repo_cleanup_script,omitempty"`
+	// FixedRepoWorktree tells the daemon to run this task in an ephemeral
+	// per-issue git worktree branched off FixedRepoPath (the base repo) rather
+	// than in-place. Set only for issue-bound tasks of a worktree-mode agent;
+	// the server skips the fixed-repo path lock for these so they parallelize.
+	FixedRepoWorktree bool `json:"fixed_repo_worktree,omitempty"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
@@ -1062,6 +1090,7 @@ type CreateAgentRequest struct {
 	FixedRepoPaths         []string                   `json:"fixed_repo_paths"`
 	FixedRepoVcsType       string                     `json:"fixed_repo_vcs_type"`
 	FixedRepoCleanupScript *string                    `json:"fixed_repo_cleanup_script"`
+	FixedRepoWorktree      bool                       `json:"fixed_repo_worktree"`
 	// ComposioToolkitAllowlist seeds the per-task overlay gate (MUL-3869). On
 	// create only the calling user can be the owner, so we accept the field
 	// unconditionally here; the cross-owner permission gate lives on PUT.
@@ -1187,7 +1216,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if fixedRepoVcsType == "" {
 		fixedRepoVcsType = defaultFixedRepoVcsType
 	}
-	if err := validateFixedRepoConfig(req.FixedRepoEnabled, fixedRepoPaths, fixedRepoVcsType, req.FixedRepoCleanupScript, runtime.RuntimeMode); err != nil {
+	if err := validateFixedRepoConfig(req.FixedRepoEnabled, fixedRepoPaths, fixedRepoVcsType, req.FixedRepoCleanupScript, req.FixedRepoWorktree, runtime.RuntimeMode); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1293,6 +1322,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		FixedRepoPaths:           encodeStringSliceJSON(fixedRepoPaths),
 		FixedRepoVcsType:         fixedRepoVcsType,
 		FixedRepoCleanupScript:   ptrToText(req.FixedRepoCleanupScript),
+		FixedRepoWorktree:        req.FixedRepoWorktree,
 		QueuedTtlSeconds:         queuedTTLSeconds,
 	})
 	if err != nil {
@@ -1443,6 +1473,7 @@ type UpdateAgentRequest struct {
 	QueuedTTLSeconds       float64                     `json:"queued_ttl_seconds"`
 	Model                  *string                     `json:"model"`
 	FixedRepoEnabled       *bool                       `json:"fixed_repo_enabled"`
+	FixedRepoWorktree      *bool                       `json:"fixed_repo_worktree"`
 	FixedRepoPaths         *[]string                   `json:"fixed_repo_paths"`
 	FixedRepoVcsType       *string                     `json:"fixed_repo_vcs_type"`
 	FixedRepoCleanupScript *string                     `json:"fixed_repo_cleanup_script"`
@@ -1905,6 +1936,12 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		params.FixedRepoEnabled = pgtype.Bool{Bool: *req.FixedRepoEnabled, Valid: true}
 	}
 
+	nextFixedRepoWorktree := existing.FixedRepoWorktree
+	if req.FixedRepoWorktree != nil {
+		nextFixedRepoWorktree = *req.FixedRepoWorktree
+		params.FixedRepoWorktree = pgtype.Bool{Bool: *req.FixedRepoWorktree, Valid: true}
+	}
+
 	nextFixedRepoPaths := decodeStringSliceJSON(existing.FixedRepoPaths)
 	if req.FixedRepoPaths != nil {
 		nextFixedRepoPaths = normalizeFixedRepoPaths(*req.FixedRepoPaths)
@@ -1933,7 +1970,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		params.FixedRepoCleanupScript = pgtype.Text{String: *req.FixedRepoCleanupScript, Valid: true}
 	}
 
-	if err := validateFixedRepoConfig(nextFixedRepoEnabled, nextFixedRepoPaths, nextFixedRepoVcsType, nextCleanupScript, targetRuntimeMode); err != nil {
+	if err := validateFixedRepoConfig(nextFixedRepoEnabled, nextFixedRepoPaths, nextFixedRepoVcsType, nextCleanupScript, nextFixedRepoWorktree, targetRuntimeMode); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

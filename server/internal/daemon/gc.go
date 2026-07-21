@@ -74,7 +74,10 @@ func (d *Daemon) runGC(ctx context.Context) {
 
 	stats := &gcStats{byPattern: map[string]int{}}
 	for _, wsEntry := range entries {
-		if !wsEntry.IsDir() || wsEntry.Name() == ".repos" {
+		// Skip the bare-repo cache (.repos) and the per-issue local worktree
+		// root (localwt) — both are managed by their own prune passes below,
+		// not the per-workspace task-dir sweep.
+		if !wsEntry.IsDir() || wsEntry.Name() == ".repos" || wsEntry.Name() == "localwt" {
 			continue
 		}
 		wsDir := filepath.Join(root, wsEntry.Name())
@@ -83,6 +86,11 @@ func (d *Daemon) runGC(ctx context.Context) {
 
 	// Prune stale worktree references from all bare repo caches.
 	d.pruneRepoWorktrees(root)
+
+	// Reap per-issue local worktrees whose issue has been terminal long enough
+	// to expire. Lives outside the per-workspace sweep because worktree dirs are
+	// keyed by daemon + issue, not by workspace + task.
+	d.pruneLocalWorktrees(ctx)
 
 	// Reclaim per-issue Codex session stores idle past their TTL. These live
 	// under the shared ~/.codex home (outside WorkspacesRoot) so resume survives
@@ -725,6 +733,116 @@ const (
 	gitCmdTimeout         = 30 * time.Second
 	gitMaintenanceTimeout = 10 * time.Minute
 )
+
+// pruneLocalWorktrees reaps per-issue local worktrees whose issue has been
+// terminal long enough to pass GCTTL. Scoped to this daemon's own subtree
+// (<WorkspacesRoot>/localwt/<DaemonID>/) so two daemons sharing a WorkspacesRoot
+// never reap each other's worktrees. No-op when DaemonID is unset or the subtree
+// does not exist yet.
+//
+// The issue's branch is intentionally left in the user's repo: it is cheap, and
+// a late follow-up task recovers it via ensureIssueWorktree's branch-reuse path.
+func (d *Daemon) pruneLocalWorktrees(ctx context.Context) {
+	if d.cfg.DaemonID == "" {
+		return
+	}
+	if err := validateWorktreePathKey("daemonID", d.cfg.DaemonID); err != nil {
+		d.logger.Warn("gc: invalid daemon id for local worktree root", "error", err)
+		return
+	}
+	daemonDir := filepath.Join(d.cfg.WorkspacesRoot, "localwt", d.cfg.DaemonID)
+	if err := validateManagedWorktreePath(d.cfg.WorkspacesRoot, daemonDir); err != nil {
+		d.logger.Warn("gc: unsafe local worktree root", "path", daemonDir, "error", err)
+		return
+	}
+	entries, err := os.ReadDir(daemonDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			d.logger.Warn("gc: read local worktree root failed", "path", daemonDir, "error", err)
+		}
+		return
+	}
+	pruned := 0
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		issueID := entry.Name()
+		wtPath := filepath.Join(daemonDir, issueID)
+		if d.pruneLocalWorktree(ctx, issueID, wtPath) {
+			pruned++
+		}
+	}
+	if pruned > 0 {
+		d.logger.Info("gc: pruned local worktrees", "count", pruned)
+	}
+}
+
+// pruneLocalWorktree participates in the same per-issue lock protocol as task
+// execution. The non-blocking acquire keeps GC from waiting behind a live
+// agent; whichever side wins excludes the other across the status check and
+// the complete git removal.
+func (d *Daemon) pruneLocalWorktree(ctx context.Context, issueID, wtPath string) bool {
+	release, ok := d.localPathLocks.TryAcquire(issueLockKey(issueID), "gc-local-worktree:"+issueID)
+	if !ok {
+		return false
+	}
+	defer release()
+	if !d.shouldPruneIssueWorktree(ctx, issueID) {
+		return false
+	}
+	return d.removeIssueWorktreeByPath(ctx, issueID, wtPath)
+}
+
+// shouldPruneIssueWorktree reports whether the issue is terminal
+// (done/cancelled) and stale past GCTTL. The caller holds the per-issue lock,
+// which is the authoritative running-task guard. On any lookup error this
+// returns false so a transient server hiccup can never over-reap a live issue's
+// worktree.
+func (d *Daemon) shouldPruneIssueWorktree(ctx context.Context, issueID string) bool {
+	status, err := d.client.GetIssueGCCheck(ctx, issueID)
+	if err != nil || isAccessNotFound(err) {
+		return false
+	}
+	if (status.Status == "done" || status.Status == "cancelled") && time.Since(status.UpdatedAt) > d.cfg.GCTTL {
+		return true
+	}
+	return false
+}
+
+// removeIssueWorktreeByPath removes a validated worktree and its git metadata.
+// Failures are logged and retried on a later GC pass; it deliberately does not
+// fall back to RemoveAll because bypassing git can race repository mutations,
+// discard recoverable uncommitted work, and strand metadata in the user's repo.
+func (d *Daemon) removeIssueWorktreeByPath(ctx context.Context, issueID, wtPath string) bool {
+	commonDir, err := gitCommonDir(ctx, wtPath)
+	if err != nil {
+		d.logger.Warn("gc: resolve local worktree git metadata failed", "path", wtPath, "error", err)
+		return false
+	}
+	valid, err := validateIssueWorktree(ctx, wtPath, commonDir, issueWorktreeBranch(issueID))
+	if err != nil || !valid {
+		d.logger.Warn("gc: refusing to remove unexpected local worktree", "path", wtPath, "error", err)
+		return false
+	}
+	clean, err := isWorktreeClean(ctx, wtPath)
+	if err != nil {
+		d.logger.Warn("gc: inspect local worktree status failed", "path", wtPath, "error", err)
+		return false
+	}
+	if !clean {
+		d.logger.Info("gc: preserving dirty local worktree", "path", wtPath)
+		return false
+	}
+	if err := d.removeIssueWorktreeWithCommonDir(ctx, commonDir, wtPath); err != nil {
+		d.logger.Warn("gc: git worktree remove failed", "path", wtPath, "error", err)
+		return false
+	}
+	return true
+}
 
 // pruneRepoWorktrees runs `git worktree prune` on all bare repos in the cache.
 func (d *Daemon) pruneRepoWorktrees(workspacesRoot string) {

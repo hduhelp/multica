@@ -199,6 +199,8 @@
       "none": "なし",
       "custom": "カスタム"
     },
+    "prop_fixed_repo_worktree": "自動 worktree",
+    "fixed_repo_worktree_hint": "Git のみ。各 issue はこのリポジトリから分岐した使い捨ての git worktree で実行され、1 つのディレクトリで順番待ちせずタスクが並列実行されます。単一のベースリポジトリが必要で、クリーンなチェックアウトのため事前ビルドの node_modules やキャッシュはありません。",
     "prop_fixed_repo_cleanup": "クリーンアップスクリプト",
     "fixed_repo_cleanup_placeholder": "/path/to/cleanup.sh",
     "fixed_repo_cleanup_hint": "記録用に保存されます。まだ自動実行されません。"

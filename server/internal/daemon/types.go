@@ -149,6 +149,12 @@ type Task struct {
 	FixedRepoPath          string `json:"fixed_repo_path,omitempty"`
 	FixedRepoVcsType       string `json:"fixed_repo_vcs_type,omitempty"`
 	FixedRepoCleanupScript string `json:"fixed_repo_cleanup_script,omitempty"`
+	// FixedRepoWorktree: when true, FixedRepoPath is a git repo BASE and this
+	// task runs in an ephemeral per-issue worktree branched off it (isolated,
+	// parallel) instead of in-place. Set by the server only for issue-bound
+	// tasks of a worktree-mode agent; the daemon falls back to in-place (with
+	// the path mutex) if the base turns out not to be a git working tree.
+	FixedRepoWorktree bool `json:"fixed_repo_worktree,omitempty"`
 }
 
 // ChatAttachmentMeta is the structured attachment metadata the daemon

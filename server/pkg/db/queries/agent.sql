@@ -30,6 +30,7 @@ INSERT INTO agent (
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     composio_toolkit_allowlist, permission_mode,
     fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script,
+    fixed_repo_worktree,
     queued_ttl_seconds
 ) VALUES (
     $1, $2, $3, $4, $5,
@@ -41,6 +42,7 @@ INSERT INTO agent (
     COALESCE(sqlc.narg('fixed_repo_paths'), '[]'::jsonb),
     COALESCE(sqlc.narg('fixed_repo_vcs_type'), 'git'),
     sqlc.narg('fixed_repo_cleanup_script'),
+    COALESCE(sqlc.narg('fixed_repo_worktree'), false),
     sqlc.narg('queued_ttl_seconds')
 )
 RETURNING *;
@@ -97,6 +99,7 @@ UPDATE agent SET
     fixed_repo_paths = COALESCE(sqlc.narg('fixed_repo_paths'), fixed_repo_paths),
     fixed_repo_vcs_type = COALESCE(sqlc.narg('fixed_repo_vcs_type'), fixed_repo_vcs_type),
     fixed_repo_cleanup_script = COALESCE(sqlc.narg('fixed_repo_cleanup_script'), fixed_repo_cleanup_script),
+    fixed_repo_worktree = COALESCE(sqlc.narg('fixed_repo_worktree'), fixed_repo_worktree),
     queued_ttl_seconds = COALESCE(sqlc.narg('queued_ttl_seconds'), queued_ttl_seconds),
     updated_at = now()
 WHERE id = $1

@@ -445,6 +445,12 @@ export interface Agent {
   fixed_repo_paths?: string[];
   /** VCS hint for fixed repo tasks. Defaults to "git" when omitted. */
   fixed_repo_vcs_type?: FixedRepoVcsType;
+  /**
+   * When true (git-backed fixed repo only), each issue-bound task runs in an
+   * ephemeral per-issue git worktree branched off the base repo, so the agent's
+   * concurrency parallelizes instead of serializing on the single path.
+   */
+  fixed_repo_worktree?: boolean;
   /** Persisted for future cleanup support; not executed by v1 daemon. */
   fixed_repo_cleanup_script?: string | null;
   /**
@@ -541,6 +547,7 @@ export interface CreateAgentRequest {
   fixed_repo_enabled?: boolean;
   fixed_repo_paths?: string[];
   fixed_repo_vcs_type?: FixedRepoVcsType;
+  fixed_repo_worktree?: boolean;
   fixed_repo_cleanup_script?: string | null;
   /** Optional runtime-native reasoning/effort token. See `Agent.thinking_level`. */
   thinking_level?: string;
@@ -693,6 +700,7 @@ export interface UpdateAgentRequest {
   fixed_repo_enabled?: boolean;
   fixed_repo_paths?: string[];
   fixed_repo_vcs_type?: FixedRepoVcsType;
+  fixed_repo_worktree?: boolean;
   fixed_repo_cleanup_script?: string | null;
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
