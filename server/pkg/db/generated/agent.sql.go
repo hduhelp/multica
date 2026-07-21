@@ -14,7 +14,7 @@ import (
 const archiveAgent = `-- name: ArchiveAgent :one
 UPDATE agent SET archived_at = now(), archived_by = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 type ArchiveAgentParams struct {
@@ -58,6 +58,7 @@ func (q *Queries) ArchiveAgent(ctx context.Context, arg ArchiveAgentParams) (Age
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -66,7 +67,7 @@ const archiveAgentsByIDs = `-- name: ArchiveAgentsByIDs :many
 UPDATE agent
 SET archived_at = now(), archived_by = $1, updated_at = now()
 WHERE id = ANY($2::uuid[]) AND archived_at IS NULL
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 type ArchiveAgentsByIDsParams struct {
@@ -124,6 +125,7 @@ func (q *Queries) ArchiveAgentsByIDs(ctx context.Context, arg ArchiveAgentsByIDs
 			&i.FixedRepoCleanupScript,
 			&i.QueuedTtlSeconds,
 			&i.DisabledRuntimeSkills,
+			&i.FixedRepoWorktree,
 		); err != nil {
 			return nil, err
 		}
@@ -139,7 +141,7 @@ const archiveAgentsByRuntime = `-- name: ArchiveAgentsByRuntime :many
 UPDATE agent
 SET archived_at = now(), archived_by = $1, updated_at = now()
 WHERE runtime_id = ANY($2::uuid[]) AND archived_at IS NULL
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 type ArchiveAgentsByRuntimeParams struct {
@@ -193,6 +195,7 @@ func (q *Queries) ArchiveAgentsByRuntime(ctx context.Context, arg ArchiveAgentsB
 			&i.FixedRepoCleanupScript,
 			&i.QueuedTtlSeconds,
 			&i.DisabledRuntimeSkills,
+			&i.FixedRepoWorktree,
 		); err != nil {
 			return nil, err
 		}
@@ -1074,7 +1077,7 @@ func (q *Queries) ClaimChatFinalizeDeferred(ctx context.Context, id pgtype.UUID)
 const clearAgentComposioToolkitAllowlist = `-- name: ClearAgentComposioToolkitAllowlist :one
 UPDATE agent SET composio_toolkit_allowlist = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 // Explicit NULL-clear for composio_toolkit_allowlist. The COALESCE-based
@@ -1119,6 +1122,7 @@ func (q *Queries) ClearAgentComposioToolkitAllowlist(ctx context.Context, id pgt
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -1126,7 +1130,7 @@ func (q *Queries) ClearAgentComposioToolkitAllowlist(ctx context.Context, id pgt
 const clearAgentFixedRepoCleanupScript = `-- name: ClearAgentFixedRepoCleanupScript :one
 UPDATE agent SET fixed_repo_cleanup_script = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 func (q *Queries) ClearAgentFixedRepoCleanupScript(ctx context.Context, id pgtype.UUID) (Agent, error) {
@@ -1165,6 +1169,7 @@ func (q *Queries) ClearAgentFixedRepoCleanupScript(ctx context.Context, id pgtyp
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -1172,7 +1177,7 @@ func (q *Queries) ClearAgentFixedRepoCleanupScript(ctx context.Context, id pgtyp
 const clearAgentMcpConfig = `-- name: ClearAgentMcpConfig :one
 UPDATE agent SET mcp_config = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 func (q *Queries) ClearAgentMcpConfig(ctx context.Context, id pgtype.UUID) (Agent, error) {
@@ -1211,6 +1216,7 @@ func (q *Queries) ClearAgentMcpConfig(ctx context.Context, id pgtype.UUID) (Agen
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -1218,7 +1224,7 @@ func (q *Queries) ClearAgentMcpConfig(ctx context.Context, id pgtype.UUID) (Agen
 const clearAgentQueuedTTLSeconds = `-- name: ClearAgentQueuedTTLSeconds :one
 UPDATE agent SET queued_ttl_seconds = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 func (q *Queries) ClearAgentQueuedTTLSeconds(ctx context.Context, id pgtype.UUID) (Agent, error) {
@@ -1257,6 +1263,7 @@ func (q *Queries) ClearAgentQueuedTTLSeconds(ctx context.Context, id pgtype.UUID
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -1264,7 +1271,7 @@ func (q *Queries) ClearAgentQueuedTTLSeconds(ctx context.Context, id pgtype.UUID
 const clearAgentThinkingLevel = `-- name: ClearAgentThinkingLevel :one
 UPDATE agent SET thinking_level = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 // Explicit NULL-clear for thinking_level. COALESCE-based UpdateAgent cannot
@@ -1306,6 +1313,7 @@ func (q *Queries) ClearAgentThinkingLevel(ctx context.Context, id pgtype.UUID) (
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -1404,6 +1412,7 @@ INSERT INTO agent (
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     composio_toolkit_allowlist, permission_mode,
     fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script,
+    fixed_repo_worktree,
     queued_ttl_seconds
 ) VALUES (
     $1, $2, $3, $4, $5,
@@ -1415,9 +1424,10 @@ INSERT INTO agent (
     COALESCE($20, '[]'::jsonb),
     COALESCE($21, 'git'),
     $22,
-    $23
+    COALESCE($23, false),
+    $24
 )
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 type CreateAgentParams struct {
@@ -1443,6 +1453,7 @@ type CreateAgentParams struct {
 	FixedRepoPaths           interface{}   `json:"fixed_repo_paths"`
 	FixedRepoVcsType         interface{}   `json:"fixed_repo_vcs_type"`
 	FixedRepoCleanupScript   pgtype.Text   `json:"fixed_repo_cleanup_script"`
+	FixedRepoWorktree        interface{}   `json:"fixed_repo_worktree"`
 	QueuedTtlSeconds         pgtype.Float8 `json:"queued_ttl_seconds"`
 }
 
@@ -1470,6 +1481,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		arg.FixedRepoPaths,
 		arg.FixedRepoVcsType,
 		arg.FixedRepoCleanupScript,
+		arg.FixedRepoWorktree,
 		arg.QueuedTtlSeconds,
 	)
 	var i Agent
@@ -1506,6 +1518,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -1520,7 +1533,7 @@ INSERT INTO agent (
     'private', 'private', 1, $5, $6,
     '{}'::jsonb, '[]'::jsonb, $7, 'system', $8
 )
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 type CreateAgentBuilderParams struct {
@@ -1583,6 +1596,7 @@ func (q *Queries) CreateAgentBuilder(ctx context.Context, arg CreateAgentBuilder
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -2588,7 +2602,7 @@ func (q *Queries) FailStaleTasks(ctx context.Context, arg FailStaleTasksParams) 
 }
 
 const getAgent = `-- name: GetAgent :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree FROM agent
 WHERE id = $1
 `
 
@@ -2628,12 +2642,13 @@ func (q *Queries) GetAgent(ctx context.Context, id pgtype.UUID) (Agent, error) {
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
 
 const getAgentForClaimUpdate = `-- name: GetAgentForClaimUpdate :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree FROM agent
 WHERE id = $1
 FOR UPDATE
 `
@@ -2674,12 +2689,13 @@ func (q *Queries) GetAgentForClaimUpdate(ctx context.Context, id pgtype.UUID) (A
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
 
 const getAgentForUpdate = `-- name: GetAgentForUpdate :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree FROM agent
 WHERE id = $1
 FOR UPDATE
 `
@@ -2722,12 +2738,13 @@ func (q *Queries) GetAgentForUpdate(ctx context.Context, id pgtype.UUID) (Agent,
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
 
 const getAgentInWorkspace = `-- name: GetAgentInWorkspace :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
 `
 
@@ -2772,6 +2789,7 @@ func (q *Queries) GetAgentInWorkspace(ctx context.Context, arg GetAgentInWorkspa
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -3298,7 +3316,7 @@ func (q *Queries) LinkTaskToIssue(ctx context.Context, arg LinkTaskToIssueParams
 }
 
 const listActiveAgentsByRuntime = `-- name: ListActiveAgentsByRuntime :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree FROM agent
 WHERE runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC
 `
@@ -3351,6 +3369,7 @@ func (q *Queries) ListActiveAgentsByRuntime(ctx context.Context, runtimeID pgtyp
 			&i.FixedRepoCleanupScript,
 			&i.QueuedTtlSeconds,
 			&i.DisabledRuntimeSkills,
+			&i.FixedRepoWorktree,
 		); err != nil {
 			return nil, err
 		}
@@ -3363,7 +3382,7 @@ func (q *Queries) ListActiveAgentsByRuntime(ctx context.Context, runtimeID pgtyp
 }
 
 const listActiveAgentsByRuntimeForUpdate = `-- name: ListActiveAgentsByRuntimeForUpdate :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree FROM agent
 WHERE runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC
 FOR UPDATE
@@ -3419,6 +3438,7 @@ func (q *Queries) ListActiveAgentsByRuntimeForUpdate(ctx context.Context, runtim
 			&i.FixedRepoCleanupScript,
 			&i.QueuedTtlSeconds,
 			&i.DisabledRuntimeSkills,
+			&i.FixedRepoWorktree,
 		); err != nil {
 			return nil, err
 		}
@@ -3586,7 +3606,7 @@ func (q *Queries) ListAgentTasks(ctx context.Context, agentID pgtype.UUID) ([]Ag
 }
 
 const listAgents = `-- name: ListAgents :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree FROM agent
 WHERE workspace_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY created_at ASC
 `
@@ -3633,6 +3653,7 @@ func (q *Queries) ListAgents(ctx context.Context, workspaceID pgtype.UUID) ([]Ag
 			&i.FixedRepoCleanupScript,
 			&i.QueuedTtlSeconds,
 			&i.DisabledRuntimeSkills,
+			&i.FixedRepoWorktree,
 		); err != nil {
 			return nil, err
 		}
@@ -3645,7 +3666,7 @@ func (q *Queries) ListAgents(ctx context.Context, workspaceID pgtype.UUID) ([]Ag
 }
 
 const listAllAgents = `-- name: ListAllAgents :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree FROM agent
 WHERE workspace_id = $1 AND kind = 'user'
 ORDER BY created_at ASC
 `
@@ -3692,6 +3713,7 @@ func (q *Queries) ListAllAgents(ctx context.Context, workspaceID pgtype.UUID) ([
 			&i.FixedRepoCleanupScript,
 			&i.QueuedTtlSeconds,
 			&i.DisabledRuntimeSkills,
+			&i.FixedRepoWorktree,
 		); err != nil {
 			return nil, err
 		}
@@ -4937,7 +4959,7 @@ SET status = CASE WHEN EXISTS (
 ) THEN 'working' ELSE 'idle' END,
     updated_at = now()
 WHERE a.id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 func (q *Queries) RefreshAgentStatusFromTasks(ctx context.Context, id pgtype.UUID) (Agent, error) {
@@ -4976,6 +4998,7 @@ func (q *Queries) RefreshAgentStatusFromTasks(ctx context.Context, id pgtype.UUI
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -5064,7 +5087,7 @@ func (q *Queries) RequeueAgentTaskAfterClaimFailure(ctx context.Context, arg Req
 const restoreAgent = `-- name: RestoreAgent :one
 UPDATE agent SET archived_at = NULL, archived_by = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 func (q *Queries) RestoreAgent(ctx context.Context, id pgtype.UUID) (Agent, error) {
@@ -5103,6 +5126,7 @@ func (q *Queries) RestoreAgent(ctx context.Context, id pgtype.UUID) (Agent, erro
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -5249,10 +5273,11 @@ UPDATE agent SET
     fixed_repo_paths = COALESCE($20, fixed_repo_paths),
     fixed_repo_vcs_type = COALESCE($21, fixed_repo_vcs_type),
     fixed_repo_cleanup_script = COALESCE($22, fixed_repo_cleanup_script),
-    queued_ttl_seconds = COALESCE($23, queued_ttl_seconds),
+    fixed_repo_worktree = COALESCE($23, fixed_repo_worktree),
+    queued_ttl_seconds = COALESCE($24, queued_ttl_seconds),
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 type UpdateAgentParams struct {
@@ -5278,6 +5303,7 @@ type UpdateAgentParams struct {
 	FixedRepoPaths           []byte        `json:"fixed_repo_paths"`
 	FixedRepoVcsType         pgtype.Text   `json:"fixed_repo_vcs_type"`
 	FixedRepoCleanupScript   pgtype.Text   `json:"fixed_repo_cleanup_script"`
+	FixedRepoWorktree        pgtype.Bool   `json:"fixed_repo_worktree"`
 	QueuedTtlSeconds         pgtype.Float8 `json:"queued_ttl_seconds"`
 }
 
@@ -5311,6 +5337,7 @@ func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent
 		arg.FixedRepoPaths,
 		arg.FixedRepoVcsType,
 		arg.FixedRepoCleanupScript,
+		arg.FixedRepoWorktree,
 		arg.QueuedTtlSeconds,
 	)
 	var i Agent
@@ -5347,6 +5374,7 @@ func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -5355,7 +5383,7 @@ const updateAgentCustomEnv = `-- name: UpdateAgentCustomEnv :one
 UPDATE agent
 SET custom_env = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 type UpdateAgentCustomEnvParams struct {
@@ -5404,6 +5432,7 @@ func (q *Queries) UpdateAgentCustomEnv(ctx context.Context, arg UpdateAgentCusto
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -5412,7 +5441,7 @@ const updateAgentDisabledRuntimeSkills = `-- name: UpdateAgentDisabledRuntimeSki
 UPDATE agent
 SET disabled_runtime_skills = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 type UpdateAgentDisabledRuntimeSkillsParams struct {
@@ -5456,6 +5485,7 @@ func (q *Queries) UpdateAgentDisabledRuntimeSkills(ctx context.Context, arg Upda
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }
@@ -5463,7 +5493,7 @@ func (q *Queries) UpdateAgentDisabledRuntimeSkills(ctx context.Context, arg Upda
 const updateAgentStatus = `-- name: UpdateAgentStatus :one
 UPDATE agent SET status = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script, queued_ttl_seconds, disabled_runtime_skills, fixed_repo_worktree
 `
 
 type UpdateAgentStatusParams struct {
@@ -5507,6 +5537,7 @@ func (q *Queries) UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusPa
 		&i.FixedRepoCleanupScript,
 		&i.QueuedTtlSeconds,
 		&i.DisabledRuntimeSkills,
+		&i.FixedRepoWorktree,
 	)
 	return i, err
 }

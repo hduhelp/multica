@@ -97,3 +97,68 @@ func TestFixedRepoAssignmentForTask_HomeDirRejected(t *testing.T) {
 		t.Fatal("expected error when fixed repo path is the home directory, got nil")
 	}
 }
+
+// TestFixedRepoAssignmentForTask_WorktreeWithIssue verifies that a worktree-mode
+// fixed-repo task carrying an issue resolves to Mode=worktree keyed on the
+// issue, so the gate isolates it in a per-issue git worktree (parallel across
+// issues) instead of the serial in_place path mutex.
+func TestFixedRepoAssignmentForTask_WorktreeWithIssue(t *testing.T) {
+	dir := t.TempDir()
+	got, err := fixedRepoAssignmentForTask(Task{
+		IssueID:           "issue-abc",
+		FixedRepoMode:     true,
+		FixedRepoPath:     dir,
+		FixedRepoVcsType:  "git",
+		FixedRepoWorktree: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Mode != localDirectoryModeWorktree {
+		t.Errorf("Mode = %q, want %q", got.Mode, localDirectoryModeWorktree)
+	}
+	if got.IssueID != "issue-abc" {
+		t.Errorf("IssueID = %q, want issue-abc", got.IssueID)
+	}
+}
+
+// TestFixedRepoAssignmentForTask_WorktreeWithoutIssue verifies that a
+// worktree-mode task with NO issue falls back to in_place: worktree granularity
+// is per-issue, so a task with no issue key must serialize on the path mutex
+// rather than silently run unisolated.
+func TestFixedRepoAssignmentForTask_WorktreeWithoutIssue(t *testing.T) {
+	dir := t.TempDir()
+	got, err := fixedRepoAssignmentForTask(Task{
+		FixedRepoMode:     true,
+		FixedRepoPath:     dir,
+		FixedRepoVcsType:  "git",
+		FixedRepoWorktree: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Mode != localDirectoryModeInPlace {
+		t.Errorf("Mode = %q, want %q (no issue → in_place)", got.Mode, localDirectoryModeInPlace)
+	}
+	if got.IssueID != "" {
+		t.Errorf("IssueID = %q, want empty", got.IssueID)
+	}
+}
+
+// TestFixedRepoAssignmentForTask_NonWorktreeDefaultsInPlace guards that an
+// ordinary fixed-repo task (worktree flag off) always resolves to in_place even
+// when it has an issue, so existing serial behaviour is unchanged.
+func TestFixedRepoAssignmentForTask_NonWorktreeDefaultsInPlace(t *testing.T) {
+	dir := t.TempDir()
+	got, err := fixedRepoAssignmentForTask(Task{
+		IssueID:       "issue-abc",
+		FixedRepoMode: true,
+		FixedRepoPath: dir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Mode != localDirectoryModeInPlace {
+		t.Errorf("Mode = %q, want %q", got.Mode, localDirectoryModeInPlace)
+	}
+}

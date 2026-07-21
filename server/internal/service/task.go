@@ -2364,7 +2364,15 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 		// claim transaction: if no path is free the dispatch is rolled back and
 		// the agent is treated as having no capacity (the task stays queued),
 		// exactly like the max_concurrent_tasks gate above.
-		if agent.FixedRepoEnabled {
+		// Worktree mode is the exception: an issue-bound task of a worktree
+		// agent runs in its own ephemeral per-issue git worktree, so it does
+		// NOT contend for the single base path — skip the lock entirely and let
+		// concurrency be bounded only by max_concurrent_tasks above. Non-issue
+		// tasks (no worktree key) still take the path lock and run in-place
+		// serially. The daemon owns the worktree isolation; no server-side lock
+		// is held, so a daemon restart self-heals with nothing to release.
+		worktreeTask := agent.FixedRepoWorktree && task.IssueID.Valid
+		if agent.FixedRepoEnabled && !worktreeTask {
 			runtimeID := task.RuntimeID
 			if !runtimeID.Valid {
 				runtimeID = agent.RuntimeID

@@ -524,6 +524,27 @@ function FixedRepoSettings({
             </NativeSelect>
           </SettingsRow>
 
+          {(agent.fixed_repo_vcs_type ?? "git") === "git" && (
+            <SettingsRow
+              label={t(($) => $.inspector.prop_fixed_repo_worktree)}
+              align="start"
+            >
+              <div>
+                <Switch
+                  checked={agent.fixed_repo_worktree === true}
+                  disabled={!canEdit}
+                  onCheckedChange={(checked) =>
+                    update({ fixed_repo_worktree: checked })
+                  }
+                  aria-label={t(($) => $.inspector.prop_fixed_repo_worktree)}
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t(($) => $.inspector.fixed_repo_worktree_hint)}
+                </p>
+              </div>
+            </SettingsRow>
+          )}
+
           <SettingsRow
             label={t(($) => $.inspector.prop_fixed_repo_cleanup)}
             align="start"

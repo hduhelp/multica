@@ -56,6 +56,7 @@ type Agent struct {
 	FixedRepoCleanupScript pgtype.Text   `json:"fixed_repo_cleanup_script"`
 	QueuedTtlSeconds       pgtype.Float8 `json:"queued_ttl_seconds"`
 	DisabledRuntimeSkills  []byte        `json:"disabled_runtime_skills"`
+	FixedRepoWorktree      bool          `json:"fixed_repo_worktree"`
 }
 
 type AgentFixedRepoLock struct {
