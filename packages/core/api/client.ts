@@ -22,6 +22,7 @@ import type {
   UpdateAgentRequest,
   AgentEnvResponse,
   UpdateAgentEnvRequest,
+  UpsertAgentRuntimeBindingRequest,
   AgentTask,
   AgentActivityBucket,
   AgentRunCount,
@@ -29,6 +30,7 @@ import type {
   RuntimeProfile,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
+  AgentRuntimeBinding,
   InboxItem,
   InboxWorkspaceUnread,
   IssueSubscriber,
@@ -47,6 +49,7 @@ import type {
   CreateSkillRequest,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
+  SetAgentRuntimeSkillEnabledRequest,
   PersonalAccessToken,
   CreatePersonalAccessTokenRequest,
   CreatePersonalAccessTokenResponse,
@@ -90,6 +93,10 @@ import type {
   IssueProperty,
   IssuePropertyValue,
   CreatePropertyRequest,
+  CreateIssueStatusRequest,
+  UpdateIssueStatusRequest,
+  IssueStatusDefinition,
+  IssueStatusCatalog,
   UpdatePropertyRequest,
   ListPropertiesResponse,
   IssuePropertiesResponse,
@@ -159,9 +166,11 @@ import { createRequestId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
+  AgentTaskSchema,
   AgentTaskListSchema,
   AgentTemplateSchema,
   AgentTemplateSummaryListSchema,
+  AgentRuntimeBindingSchema,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
@@ -179,6 +188,7 @@ import {
   DashboardUsageDailyListSchema,
   EMPTY_AGENT_TEMPLATE_DETAIL,
   EMPTY_AGENT_TEMPLATE_SUMMARY_LIST,
+  EMPTY_AGENT_RUNTIME_BINDING,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_CLOUD_RUNTIME_NODE,
@@ -208,6 +218,7 @@ import {
   ListIssuesResponseSchema,
   CreateIssueResponseSchema,
   ListWebhookDeliveriesResponseSchema,
+  AgentActivityBucketListSchema,
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
@@ -250,9 +261,13 @@ import {
   LabelSchema,
   ListLabelsResponseSchema,
   IssuePropertySchema,
+  IssueStatusDefinitionSchema,
+  IssueStatusCatalogSchema,
   ListPropertiesResponseSchema,
   IssuePropertiesResponseSchema,
   EMPTY_ISSUE_PROPERTY,
+  EMPTY_ISSUE_STATUS_DEFINITION,
+  EMPTY_ISSUE_STATUS_CATALOG,
   EMPTY_LIST_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PROPERTIES_RESPONSE,
   ResourceLabelsResponseSchema,
@@ -564,6 +579,8 @@ export class ApiClient {
     if (params?.workspace_id) search.set("workspace_id", params.workspace_id);
     if (params?.q?.trim()) search.set("q", params.q.trim());
     if (params?.status) search.set("status", params.status);
+    if (params?.status_id) search.set("status_id", params.status_id);
+    if (params?.status_category) search.set("status_category", params.status_category);
     if (params?.statuses?.length) search.set("statuses", params.statuses.join(","));
     if (params?.priority) search.set("priority", params.priority);
     if (params?.priorities?.length) search.set("priorities", params.priorities.join(","));
@@ -627,6 +644,8 @@ export class ApiClient {
     if (params.offset) search.set("offset", String(params.offset));
     if (params.workspace_id) search.set("workspace_id", params.workspace_id);
     if (params.statuses?.length) search.set("statuses", params.statuses.join(","));
+    if (params.status_id) search.set("status_id", params.status_id);
+    if (params.status_category) search.set("status_category", params.status_category);
     if (params.priorities?.length) search.set("priorities", params.priorities.join(","));
     if (params.assignee_types?.length) search.set("assignee_types", params.assignee_types.join(","));
     if (params.assignee_id) search.set("assignee_id", params.assignee_id);
@@ -1039,6 +1058,44 @@ export class ApiClient {
     });
   }
 
+  async getAgentRuntimeBinding(id: string): Promise<AgentRuntimeBinding> {
+    const raw = await this.fetch<unknown>(`/api/agents/${id}/runtime-binding`);
+    return parseWithFallback(
+      raw,
+      AgentRuntimeBindingSchema,
+      EMPTY_AGENT_RUNTIME_BINDING,
+      { endpoint: "GET /api/agents/:id/runtime-binding" },
+    );
+  }
+
+  async upsertAgentRuntimeBinding(
+    id: string,
+    data: UpsertAgentRuntimeBindingRequest,
+  ): Promise<AgentRuntimeBinding> {
+    const raw = await this.fetch<unknown>(`/api/agents/${id}/runtime-binding`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(
+      raw,
+      AgentRuntimeBindingSchema,
+      EMPTY_AGENT_RUNTIME_BINDING,
+      { endpoint: "PUT /api/agents/:id/runtime-binding" },
+    );
+  }
+
+  async deleteAgentRuntimeBinding(id: string): Promise<AgentRuntimeBinding> {
+    const raw = await this.fetch<unknown>(`/api/agents/${id}/runtime-binding`, {
+      method: "DELETE",
+    });
+    return parseWithFallback(
+      raw,
+      AgentRuntimeBindingSchema,
+      EMPTY_AGENT_RUNTIME_BINDING,
+      { endpoint: "DELETE /api/agents/:id/runtime-binding" },
+    );
+  }
+
   async archiveAgent(id: string): Promise<Agent> {
     return this.fetch(`/api/agents/${id}/archive`, { method: "POST" });
   }
@@ -1278,6 +1335,12 @@ export class ApiClient {
     return this.fetch(`/api/runtimes/${runtimeId}/archive-agents-and-delete`, {
       method: "POST",
       body: JSON.stringify({ expected_active_agent_ids: expectedActiveAgentIds }),
+    });
+  }
+
+  async resumeRuntime(runtimeId: string): Promise<AgentRuntime> {
+    return this.fetch(`/api/runtimes/${runtimeId}/resume`, {
+      method: "POST",
     });
   }
 
@@ -1581,8 +1644,24 @@ export class ApiClient {
   // completed_at. One workspace-wide fetch backs both the Agents-list
   // sparkline (uses trailing 7 buckets) and the agent detail "Last 30
   // days" panel (uses all 30).
-  async getWorkspaceAgentActivity30d(): Promise<AgentActivityBucket[]> {
-    return this.fetch(`/api/agent-activity-30d`);
+  async getWorkspaceAgentActivity30d(params?: {
+    tz?: string;
+  }): Promise<AgentActivityBucket[]> {
+    const search = new URLSearchParams();
+    // `tz` drives the calendar-day boundary, like the usage reports.
+    // Caller-supplied; the backend falls back to user.timezone / UTC if
+    // omitted.
+    if (params?.tz) search.set("tz", params.tz);
+    const qs = search.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/agent-activity-30d${qs ? `?${qs}` : ""}`,
+    );
+    return parseWithFallback<AgentActivityBucket[]>(
+      raw,
+      AgentActivityBucketListSchema,
+      [],
+      { endpoint: "GET /api/agent-activity-30d" },
+    );
   }
 
   // Per-agent 30-day total run count for the Agents-list RUNS column.
@@ -1596,6 +1675,17 @@ export class ApiClient {
 
   async listTaskMessages(taskId: string): Promise<TaskMessagePayload[]> {
     return this.fetch(`/api/tasks/${taskId}/messages`);
+  }
+
+  // Single task metadata, used to hydrate the transcript dialog header when a
+  // surface only knows a task id (a comment's source_task_id, a chat message's
+  // task_id). Returns null on a malformed response so the caller can simply
+  // skip the transcript affordance rather than crash the surrounding view.
+  async getTask(taskId: string): Promise<AgentTask | null> {
+    const raw = await this.fetch<unknown>(`/api/tasks/${taskId}`);
+    return parseWithFallback<AgentTask | null>(raw, AgentTaskSchema, null, {
+      endpoint: "GET /api/tasks/{taskId}",
+    });
   }
 
   async listTasksByIssue(issueId: string): Promise<AgentTask[]> {
@@ -1851,6 +1941,10 @@ export class ApiClient {
     });
   }
 
+  async syncSkill(id: string): Promise<Skill> {
+    return this.fetch(`/api/skills/${id}/sync`, { method: "POST" });
+  }
+
   async listAgentSkills(agentId: string): Promise<SkillSummary[]> {
     return this.fetch(`/api/agents/${agentId}/skills`);
   }
@@ -1878,6 +1972,16 @@ export class ApiClient {
 			body: JSON.stringify({ enabled }),
 		});
 	}
+
+  async setAgentRuntimeSkillEnabled(
+    agentId: string,
+    data: SetAgentRuntimeSkillEnabledRequest,
+  ): Promise<void> {
+    await this.fetch(`/api/agents/${agentId}/runtime-skills/enabled`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
 
 	async removeAgentSkill(agentId: string, skillId: string): Promise<void> {
 		await this.fetch(`/api/agents/${agentId}/skills/${skillId}`, {
@@ -2288,6 +2392,66 @@ export class ApiClient {
     return parseWithFallback(raw, IssuePropertySchema, EMPTY_ISSUE_PROPERTY, {
       endpoint: "POST /api/properties",
     });
+  }
+
+  // ── Issue status catalog (MUL-4809 §5) ────────────────────────────────────
+
+  /**
+   * The workspace status catalog plus its alias table. Readable by any member;
+   * `include_archived` is admin-only and 403s otherwise.
+   *
+   * A backend predating custom statuses 404s here (installed desktop clients can
+   * outrun the server). That degrades to an empty catalog, which every surface
+   * reads as "not loaded" and falls back to the legacy 7 status tokens — so an
+   * old server never breaks the issue UI.
+   */
+  async listIssueStatuses(includeArchived = false): Promise<IssueStatusCatalog> {
+    const suffix = includeArchived ? "?include_archived=true" : "";
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/issue-statuses${suffix}`);
+    } catch (error) {
+      if (error instanceof Error && "status" in error && (error as { status?: number }).status === 404) {
+        return EMPTY_ISSUE_STATUS_CATALOG;
+      }
+      throw error;
+    }
+    return parseWithFallback(raw, IssueStatusCatalogSchema, EMPTY_ISSUE_STATUS_CATALOG, {
+      endpoint: "GET /api/issue-statuses",
+    });
+  }
+
+  async createIssueStatus(data: CreateIssueStatusRequest): Promise<IssueStatusDefinition> {
+    const raw = await this.fetch<unknown>(`/api/issue-statuses`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssueStatusDefinitionSchema, EMPTY_ISSUE_STATUS_DEFINITION, {
+      endpoint: "POST /api/issue-statuses",
+    });
+  }
+
+  async updateIssueStatus(id: string, data: UpdateIssueStatusRequest): Promise<IssueStatusDefinition> {
+    const raw = await this.fetch<unknown>(`/api/issue-statuses/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssueStatusDefinitionSchema, EMPTY_ISSUE_STATUS_DEFINITION, {
+      endpoint: "PATCH /api/issue-statuses/{id}",
+    });
+  }
+
+  /**
+   * Archives (soft-deletes) a custom status. When the status still has issues,
+   * the server requires `migrateToStatusId` — a non-archived status in the SAME
+   * Category — and moves those issues over in the same transaction. System
+   * statuses cannot be archived.
+   */
+  async archiveIssueStatus(id: string, migrateToStatusId?: string): Promise<void> {
+    const suffix = migrateToStatusId
+      ? `?migrate_to_status_id=${encodeURIComponent(migrateToStatusId)}`
+      : "";
+    await this.fetch<unknown>(`/api/issue-statuses/${id}${suffix}`, { method: "DELETE" });
   }
 
   async updateProperty(id: string, data: UpdatePropertyRequest): Promise<IssueProperty> {

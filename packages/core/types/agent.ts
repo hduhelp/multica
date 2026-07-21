@@ -45,6 +45,8 @@ export interface AgentInvocationTargetInput {
   target_id?: string;
 }
 
+export type FixedRepoVcsType = "git" | "perforce" | "none" | "custom";
+
 // Runtime visibility is a separate axis from agent visibility — different
 // vocabulary because it gates a different action. "private" (default) means
 // only the runtime owner and workspace admins can bind agents to it;
@@ -83,6 +85,10 @@ export interface RuntimeDevice {
    */
   profile_id?: string | null;
   last_seen_at: string | null;
+  /** ISO timestamp when the runtime's hold expires; null when not on hold. Absent on older backends. */
+  hold_until?: string | null;
+  /** Reason for the current hold (e.g. "session_limit"); null when not on hold. Absent on older backends. */
+  hold_reason?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -120,6 +126,7 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "qoder",
   "traecli",
   "grok",
+  "qwen",
 ] as const;
 
 export type RuntimeProtocolFamily =
@@ -185,8 +192,8 @@ export type TaskFailureReason =
 // is anchored on completed_at (a task in flight contributes nothing).
 export interface AgentActivityBucket {
   agent_id: string;
-  // ISO timestamp at midnight UTC of the day.
-  bucket_at: string;
+  // Calendar day (YYYY-MM-DD) in the viewer's timezone.
+  date: string;
   task_count: number;
   failed_count: number;
 }
@@ -355,6 +362,7 @@ export interface Agent {
   description: string;
   instructions: string;
   avatar_url: string | null;
+  queued_ttl_seconds?: number | null;
   runtime_mode: AgentRuntimeMode;
   runtime_config: Record<string, unknown>;
   custom_args: string[];
@@ -431,6 +439,14 @@ export interface Agent {
   status: AgentStatus;
   max_concurrent_tasks: number;
   model: string;
+  /** Fixed local worktree pool for daemon-executed tasks. Omitted by older backends. */
+  fixed_repo_enabled?: boolean;
+  /** Local paths on the daemon host. Omitted by older backends. */
+  fixed_repo_paths?: string[];
+  /** VCS hint for fixed repo tasks. Defaults to "git" when omitted. */
+  fixed_repo_vcs_type?: FixedRepoVcsType;
+  /** Persisted for future cleanup support; not executed by v1 daemon. */
+  fixed_repo_cleanup_script?: string | null;
   /**
    * Runtime-native reasoning/effort token (e.g. Claude's
    * `low|medium|high|xhigh|max`, Codex's
@@ -444,10 +460,44 @@ export interface Agent {
   thinking_level?: string;
   owner_id: string | null;
   skills: AgentSkillSummary[];
+  /** Runtime-local skills this agent must not inherit. Older servers omit it. */
+  disabled_runtime_skills?: DisabledRuntimeSkill[];
   created_at: string;
   updated_at: string;
   archived_at: string | null;
   archived_by: string | null;
+}
+
+export interface AgentRuntimeBinding {
+  agent_id: string;
+  user_id: string;
+  runtime_id: string | null;
+  effective_runtime_id: string;
+  bound: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface UpsertAgentRuntimeBindingRequest {
+  runtime_id: string;
+}
+
+export interface DisabledRuntimeSkill {
+  runtime_id: string;
+  provider: string;
+  root: "provider" | "universal" | "plugin";
+  key: string;
+  name?: string;
+  plugin?: string;
+}
+
+export interface SetAgentRuntimeSkillEnabledRequest {
+  runtime_id: string;
+  root: "provider" | "universal" | "plugin";
+  key: string;
+  name: string;
+  plugin?: string;
+  enabled: boolean;
 }
 
 /**
@@ -486,7 +536,12 @@ export interface CreateAgentRequest {
   /** Invocation grants — see `AgentInvocationTargetInput`. */
   invocation_targets?: AgentInvocationTargetInput[];
   max_concurrent_tasks?: number;
+  queued_ttl_seconds?: number;
   model?: string;
+  fixed_repo_enabled?: boolean;
+  fixed_repo_paths?: string[];
+  fixed_repo_vcs_type?: FixedRepoVcsType;
+  fixed_repo_cleanup_script?: string | null;
   /** Optional runtime-native reasoning/effort token. See `Agent.thinking_level`. */
   thinking_level?: string;
   /** Optional template slug used by the onboarding agent picker. Surfaced
@@ -633,7 +688,12 @@ export interface UpdateAgentRequest {
   invocation_targets?: AgentInvocationTargetInput[];
   status?: AgentStatus;
   max_concurrent_tasks?: number;
+  queued_ttl_seconds?: number | null;
   model?: string;
+  fixed_repo_enabled?: boolean;
+  fixed_repo_paths?: string[];
+  fixed_repo_vcs_type?: FixedRepoVcsType;
+  fixed_repo_cleanup_script?: string | null;
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
    *   - field omitted → no change
@@ -941,6 +1001,8 @@ export interface RuntimeLocalSkillSummary {
   root?: "provider" | "universal" | "plugin";
   /** Enabled runtime plugin that contributed this skill, when applicable. */
   plugin?: string;
+  /** New daemons set this only when they can enforce per-agent disablement. */
+  can_disable?: boolean;
   file_count: number;
 }
 

@@ -21,8 +21,9 @@ import (
 // channel.InboundMessage and calls Handle, which routes by ChannelType to that
 // platform's registered resolver set and runs the same ordered pipeline for
 // every platform — installation route → two-phase dedup → group @bot filter →
-// identity + membership → ensure session → append+mark → /issue → debounced
-// run trigger — then drives the detached outbound replier + typing indicator.
+// identity + membership → ensure session → append+mark → /issue → durable
+// debounced run trigger + detached media binding — then drives the detached
+// outbound replier + typing indicator.
 //
 // The core contains no platform specifics: everything platform-shaped lives
 // behind the resolver interfaces (a feishu ResolverSet is the first
@@ -39,7 +40,16 @@ type Router struct {
 	batcher *pendingBatcher
 
 	replyTimeout time.Duration
+	mediaTimeout time.Duration
+	mediaCtx     context.Context
+	mediaCancel  context.CancelFunc
+	mediaSem     chan struct{}
 	replyWg      sync.WaitGroup
+	mediaWg      sync.WaitGroup
+
+	mediaQueueMu sync.Mutex
+	mediaQueues  map[string]*mediaQueueEntry
+	stopping     bool
 
 	logger *slog.Logger
 
@@ -53,7 +63,18 @@ type RouterConfig struct {
 	// call. It runs off the connector ACK path, so it must stay strictly
 	// under the platform ACK deadline (Lark: 3s). Defaults to 2.5s.
 	ReplyTimeout time.Duration
-	Logger       *slog.Logger
+	// MediaTimeout caps detached best-effort media download, upload, and
+	// attachment binding for one message. The budget starts at append time
+	// (it must match the persisted fire_at fallback), so it also spans any
+	// wait behind earlier media in the same session and for a global
+	// concurrency slot. Defaults to 45s.
+	MediaTimeout time.Duration
+	// MediaConcurrency caps concurrent media resolutions across all
+	// sessions, bounding burst memory (unknown-length uploads buffer up to
+	// the 100 MiB resource cap each) and platform download pressure.
+	// Per-session ordering is unaffected. Defaults to 8.
+	MediaConcurrency int
+	Logger           *slog.Logger
 }
 
 // NewRouter builds a Router around the shared (platform-agnostic) services:
@@ -64,18 +85,34 @@ func NewRouter(issues IssueCreator, tasks TaskEnqueuer, reader SessionReader, cf
 	if cfg.ReplyTimeout == 0 {
 		cfg.ReplyTimeout = 2500 * time.Millisecond
 	}
+	if cfg.MediaTimeout == 0 {
+		cfg.MediaTimeout = 45 * time.Second
+	}
+	if cfg.MediaConcurrency == 0 {
+		cfg.MediaConcurrency = 8
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	mediaCtx, mediaCancel := context.WithCancel(context.Background())
 	return &Router{
 		sets:         make(map[channel.Type]ResolverSet),
 		issues:       issues,
 		tasks:        tasks,
 		reader:       reader,
 		replyTimeout: cfg.ReplyTimeout,
+		mediaTimeout: cfg.MediaTimeout,
+		mediaCtx:     mediaCtx,
+		mediaCancel:  mediaCancel,
+		mediaSem:     make(chan struct{}, cfg.MediaConcurrency),
 		logger:       cfg.Logger,
 		pendingFresh: make(map[string]bool),
+		mediaQueues:  make(map[string]*mediaQueueEntry),
 	}
+}
+
+type mediaQueueEntry struct {
+	tail chan struct{}
 }
 
 // Register binds a platform's ResolverSet under t. Call at boot, before Run.
@@ -97,13 +134,31 @@ func (r *Router) EnableRunBatching(window time.Duration) {
 	r.batcher = newPendingBatcher(window)
 }
 
-// Drain flushes debounced run triggers and joins in-flight reply goroutines.
-// Call on shutdown AFTER the Supervisor has stopped delivering events.
-func (r *Router) Drain() {
-	if r.batcher != nil {
-		r.batcher.FlushAll()
+// Drain cancels detached media processing, flushes debounced run triggers, and
+// joins media/reply goroutines until ctx ends. It returns whether everything
+// completed. Call on shutdown AFTER the Supervisor has stopped delivering
+// events; timed-out media retains its durable placeholder fallback.
+func (r *Router) Drain(ctx context.Context) bool {
+	r.mediaQueueMu.Lock()
+	r.stopping = true
+	r.mediaCancel()
+	r.mediaQueueMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		if r.batcher != nil {
+			r.batcher.FlushAll()
+		}
+		r.mediaWg.Wait()
+		r.replyWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
 	}
-	r.replyWg.Wait()
 }
 
 // ErrNoResolverSet is returned by Handle when a message arrives for a channel
@@ -258,14 +313,22 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 		// Single tx; an error rolled it back, nothing landed. Release.
 		return Result{}, finalizeRelease, fmt.Errorf("ensure chat session: %w", err)
 	}
-
 	// 6. Append message + in-tx dedup Mark — the durable transition point.
+	// The media deadline is persisted only when the message actually carries
+	// media: a plain text message must never wait behind the media semaphore
+	// or fall back to the 45s deadline after a crash.
+	mediaPendingUntil := pgtype.Timestamptz{}
+	resolveMedia := set.Media != nil && set.Media.HasMedia(msg)
+	if resolveMedia {
+		mediaPendingUntil = pgtype.Timestamptz{Time: time.Now().Add(r.mediaTimeout), Valid: true}
+	}
 	appendRes, err := set.Session.AppendMessage(ctx, AppendParams{
-		SessionID:      sessionID,
-		Sender:         identity.UserID,
-		InstallationID: inst.ID,
-		Message:        msg,
-		ClaimToken:     claimToken,
+		SessionID:         sessionID,
+		Sender:            identity.UserID,
+		InstallationID:    inst.ID,
+		Message:           msg,
+		ClaimToken:        claimToken,
+		MediaPendingUntil: mediaPendingUntil,
 	})
 	if err != nil {
 		if errors.Is(err, ErrClaimLost) {
@@ -312,7 +375,126 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 	//    session creator (group sessions are creator=installer). Latest sender
 	//    in a window wins (MUL-2645).
 	r.scheduleRun(set, inst, msg, sessionID, identity.UserID)
+	if resolveMedia {
+		r.enqueueMedia(set, inst, identity, appendRes.MessageID, msg, sessionID, mediaPendingUntil.Time)
+	}
 	return res, postAppendFinalize, nil
+}
+
+// enqueueMedia detaches remote media I/O from Handle while preserving message
+// order within a chat session. Run scheduling is independent and durable: the
+// task service defers a task to the persisted media deadline, then media
+// completion promotes it early.
+func (r *Router) enqueueMedia(set ResolverSet, inst ResolvedInstallation, identity ResolvedIdentity, chatMessageID pgtype.UUID, msg channel.InboundMessage, sessionID pgtype.UUID, deadline time.Time) {
+	key := keyForSession(sessionID)
+	done := make(chan struct{})
+
+	r.mediaQueueMu.Lock()
+	if r.stopping {
+		r.mediaQueueMu.Unlock()
+		return
+	}
+	entry, ok := r.mediaQueues[key]
+	var previous <-chan struct{}
+	if !ok {
+		entry = &mediaQueueEntry{}
+		r.mediaQueues[key] = entry
+	} else {
+		previous = entry.tail
+	}
+	entry.tail = done
+	r.mediaWg.Add(1)
+	r.mediaQueueMu.Unlock()
+
+	go func() {
+		defer r.mediaWg.Done()
+		defer close(done)
+		defer r.finishMediaQueue(key, done)
+		if previous != nil {
+			select {
+			case <-previous:
+			case <-r.mediaCtx.Done():
+			}
+		}
+		select {
+		case r.mediaSem <- struct{}{}:
+			defer func() { <-r.mediaSem }()
+		case <-r.mediaCtx.Done():
+			// Cancelled while queued for a slot: proceed without one.
+			// ResolveMedia returns immediately on the dead context and only
+			// the bounded DB finalize runs, preserving prompt marker
+			// clearing on shutdown.
+		}
+		r.resolveAndBindMedia(set, inst, identity, chatMessageID, msg, sessionID, deadline)
+	}()
+}
+
+const mediaFinalizeTimeout = 5 * time.Second
+
+func (r *Router) resolveAndBindMedia(set ResolverSet, inst ResolvedInstallation, identity ResolvedIdentity, chatMessageID pgtype.UUID, msg channel.InboundMessage, sessionID pgtype.UUID, deadline time.Time) {
+	ctx, cancel := context.WithDeadline(r.mediaCtx, deadline)
+	defer cancel()
+
+	resolved := set.Media.ResolveMedia(ctx, inst, identity, sessionID, msg)
+	finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), mediaFinalizeTimeout)
+	defer finalizeCancel()
+	var discardRefs []channel.MediaRef
+	if err := ctx.Err(); err != nil {
+		// Refs resolved before the deadline already sit in object storage but
+		// will never gain an attachment row — and the dedup mark committed
+		// with the message, so a redelivery is dropped and never re-resolves
+		// these keys. Collected for deletion below, after the user-facing
+		// marker clear and promotion.
+		discardRefs = resolved.MediaRefs
+		resolved.MediaRefs = nil
+		r.logger.Warn("channel router: media resolution incomplete; using placeholder",
+			"channel_type", string(msg.Source.ChannelType),
+			"event_id", msg.EventID,
+			"message_id", msg.MessageID,
+			"error", err)
+	}
+	if err := set.Session.BindMedia(finalizeCtx, BindMediaParams{
+		MessageID:   chatMessageID,
+		SessionID:   sessionID,
+		WorkspaceID: inst.WorkspaceID,
+		Sender:      identity.UserID,
+		MediaRefs:   resolved.MediaRefs,
+	}); err != nil {
+		// Same lifecycle rule as the deadline path: uploads that failed to
+		// bind are unreachable through the attachment table — reclaim them.
+		discardRefs = append(discardRefs, resolved.MediaRefs...)
+		r.logger.Warn("channel router: media attachment binding failed",
+			"channel_type", string(msg.Source.ChannelType),
+			"event_id", msg.EventID,
+			"message_id", msg.MessageID,
+			"err", err)
+	}
+	if err := r.tasks.PromoteChannelChatTasksIfMediaReady(finalizeCtx, sessionID); err != nil {
+		r.logger.Warn("channel router: media-ready task promotion failed",
+			"channel_type", string(msg.Source.ChannelType),
+			"event_id", msg.EventID,
+			"message_id", msg.MessageID,
+			"err", err)
+	}
+	if len(discardRefs) > 0 {
+		// A fresh budget, not finalizeCtx: a bind that failed BECAUSE the
+		// finalize deadline expired must not hand the storage deletes an
+		// already-dead context, and running last keeps S3 round-trips from
+		// starving the marker clear / promotion above.
+		discardCtx, discardCancel := context.WithTimeout(context.Background(), mediaFinalizeTimeout)
+		defer discardCancel()
+		set.Media.DiscardMedia(discardCtx, discardRefs)
+	}
+}
+
+func (r *Router) finishMediaQueue(key string, done chan struct{}) {
+	r.mediaQueueMu.Lock()
+	defer r.mediaQueueMu.Unlock()
+	entry, ok := r.mediaQueues[key]
+	if !ok || entry.tail != done {
+		return
+	}
+	delete(r.mediaQueues, key)
 }
 
 // scheduleRun hands the per-session run trigger to the debouncer (or fires it

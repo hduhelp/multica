@@ -66,6 +66,7 @@ import { collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { ExecutionLogSection } from "./execution-log-section";
 import { PullRequestList } from "./pull-request-list";
+import { ProgressSteps, type ProgressData } from "./progress-steps";
 import { useGitHubSettings } from "@multica/core/github";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
@@ -635,11 +636,13 @@ function SubIssueRow({ child }: { child: Issue }) {
       </div>
       <StatusPicker
         status={child.status}
+        statusDetail={child.status_detail}
         onUpdate={handleUpdate}
         align="start"
         trigger={
           <StatusIcon
             status={child.status}
+            detail={child.status_detail}
             className="h-[15px] w-[15px] shrink-0"
           />
         }
@@ -759,6 +762,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
   const [parentIssueOpen, setParentIssueOpen] = useState(true);
+  const [subIssuesSidebarOpen, setSubIssuesSidebarOpen] = useState(true);
   const [pullRequestsOpen, setPullRequestsOpen] = useState(true);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [tokenUsageOpen, setTokenUsageOpen] = useState(true);
@@ -1557,7 +1561,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         {propertiesOpen && <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 pl-2">
           {/* Core props — always rendered. */}
           <PropRow label={t(($) => $.detail.prop_status)}>
-            <StatusPicker status={issue.status} onUpdate={handleUpdateField} align="start" />
+            <StatusPicker
+              status={issue.status}
+              statusDetail={issue.status_detail}
+              onUpdate={handleUpdateField}
+              align="start"
+            />
           </PropRow>
           <PropRow label={t(($) => $.detail.prop_assignee)}>
             <AssigneePicker assigneeType={issue.assignee_type} assigneeId={issue.assignee_id} onUpdate={handleUpdateField} align="start" />
@@ -1773,6 +1782,43 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         </div>
       )}
 
+      {/* Sub-issues — collapsible sidebar section, only when the issue has
+          children. Shows progress count and lists each sub-issue with
+          status, identifier, and title. Positioned between Parent issue
+          and Pull requests for consistent sidebar layout. */}
+      {childIssues.length > 0 && (() => {
+        const doneCount = childIssues.filter((c) => c.status === "done").length;
+        return (
+          <div>
+            <button
+              type="button"
+              className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors mb-2 hover:bg-accent/70 ${subIssuesSidebarOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setSubIssuesSidebarOpen(!subIssuesSidebarOpen)}
+            >
+              {t(($) => $.detail.sub_issues_label)}
+              <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-[10px] tabular-nums font-medium">
+                <ProgressRing done={doneCount} total={childIssues.length} size={11} />
+                {doneCount}/{childIssues.length}
+              </span>
+              <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${subIssuesSidebarOpen ? "rotate-90" : ""}`} />
+            </button>
+            {subIssuesSidebarOpen && <div className="pl-2 space-y-0.5">
+              {childIssues.map((child) => (
+                <AppLink
+                  key={child.id}
+                  href={paths.issueDetail(child.id)}
+                  className="flex items-center gap-1.5 rounded-md px-2 -mx-2 py-1.5 text-xs hover:bg-accent/50 transition-colors group"
+                >
+                  <StatusIcon status={child.status} className="h-3.5 w-3.5 shrink-0" />
+                  <span className="text-muted-foreground shrink-0 tabular-nums">{child.identifier}</span>
+                  <span className="truncate group-hover:text-foreground">{child.title}</span>
+                </AppLink>
+              ))}
+            </div>}
+          </div>
+        );
+      })()}
+
       {/* Pull requests — hidden when the workspace disables the PR sidebar
           (or the GitHub master switch is off). Backend data is kept either
           way so re-enabling restores the section instantly. */}
@@ -1813,11 +1859,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           </PropRow>
         </div>}
       </div>
-
-      {/* Execution log — active runs + collapsed past runs. Self-contained;
-          owns its own collapse state and WS subscriptions. Hides itself
-          when there are no runs to show. */}
-      <ExecutionLogSection issueId={id} />
 
       {/* Token usage */}
       {usage && usage.task_count > 0 && (
@@ -2312,6 +2353,32 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             );
           })()}
 
+          {/* Progress — agent pipeline step indicator from metadata.progress */}
+          {(() => {
+            const raw = issue.metadata?.progress;
+            if (typeof raw !== "string") return null;
+            try {
+              const data: ProgressData = JSON.parse(raw);
+              if (!data.phases?.length) return null;
+              return (
+                <div className="mb-6">
+                  <div className="mb-2 flex items-center gap-2">
+                    <h3 className="text-sm font-medium text-muted-foreground">
+                      {t(($) => $.detail.section_progress)}
+                    </h3>
+                    <span className="text-xs tabular-nums text-muted-foreground/60">
+                      {data.phases.filter((p) => p.status === "completed").length}/
+                      {data.phases.length}
+                    </span>
+                  </div>
+                  <ProgressSteps phases={data.phases} edges={data.edges} />
+                </div>
+              );
+            } catch {
+              return null;
+            }
+          })()}
+
           <div className="my-8 border-t" />
 
           {/* Activity / Comments */}
@@ -2490,8 +2557,19 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       <div className="flex flex-1 min-h-0">
         {detailContent}
         <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
-          <SheetContent side="right" showCloseButton={false} className="w-[320px] overflow-y-auto p-4">
-            {sidebarContent}
+          <SheetContent side="right" showCloseButton={false} className="w-[320px] p-0">
+            <div className="flex flex-col h-full">
+              {/* Execution log — sticky at the top, visible while scrolling
+                  properties / token usage / metadata below. */}
+              <div className="sticky top-0 z-10 bg-background border-b empty:hidden">
+                <div className="p-4 pb-2">
+                  <ExecutionLogSection issueId={id} />
+                </div>
+              </div>
+              <div className="overflow-y-auto flex-1 p-4">
+                {sidebarContent}
+              </div>
+            </div>
           </SheetContent>
         </Sheet>
       </div>
@@ -2517,7 +2595,21 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         onResize={handleDesktopSidebarResize}
       >
         <AnimatedRightSidebar open={desktopSidebarVisualOpen} motionEnabled={desktopSidebarMotionEnabled}>
-          {sidebarContent}
+          <div className="flex flex-col h-full">
+            {/* Execution log — sticky at the top of the sidebar so agent
+                progress is always visible while scrolling through properties,
+                token usage, and metadata below. */}
+            <div className="sticky top-0 z-10 bg-background border-b empty:hidden">
+              <div className="p-4 pb-2">
+                <ExecutionLogSection issueId={id} />
+              </div>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              <div className="p-4">
+                {sidebarContent}
+              </div>
+            </div>
+          </div>
         </AnimatedRightSidebar>
       </ResizablePanel>
     </ResizablePanelGroup>

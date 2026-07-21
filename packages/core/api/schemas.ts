@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type {
   Agent,
+  AgentRuntimeBinding,
   AgentTemplate,
   AgentTemplateSummary,
   AgentBuilderSession,
@@ -23,6 +24,8 @@ import type {
   InboxWorkspaceUnread,
   Label,
   IssueProperty,
+  IssueStatusDefinition,
+  IssueStatusCatalog,
   ListPropertiesResponse,
   IssuePropertiesResponse,
   ListIssuesResponse,
@@ -435,6 +438,82 @@ export const IssueTriggerPreviewSchema = z.object({
 // to {} so consumers never need to nil-guard `issue.metadata`.
 const IssueMetadataSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({});
 
+// Resolved catalog view of an issue's status (MUL-4809). Unlike the open string
+// enums elsewhere in this file, `category` is a CLOSED 5-value set by product
+// design (no 6th Category is ever added), so it is a strict enum here — that
+// keeps the public StatusDetail.category union honest, and a malformed/unknown
+// value fails this schema and is degraded to null at the field (see IssueSchema),
+// never blanking the whole issue. `.loose()` still preserves extra server fields.
+export const StatusDetailSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  category: z.enum(["backlog", "todo", "in_progress", "done", "cancelled"]),
+  icon: z.string(),
+  color: z.string(),
+}).loose();
+
+/**
+ * A catalog entry (MUL-4809 §5). `category` is the strict 5-value enum for the
+ * same reason as StatusDetail: it is the only machine semantics and the union
+ * must stay honest. `icon` / `color` stay lenient strings — the server
+ * allowlists them, but a future token must not blank the whole row; every
+ * render path resolves an unknown value to a safe fallback.
+ */
+export const IssueStatusDefinitionSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string().optional().default(""),
+  name: z.string(),
+  description: z.string().optional().default(""),
+  icon: z.string().optional().default("todo"),
+  color: z.string().optional().default("muted-foreground"),
+  category: z.enum(["backlog", "todo", "in_progress", "done", "cancelled"]),
+  system_key: z.string().nullable().optional().default(null),
+  is_system: z.boolean().optional().default(false),
+  is_default: z.boolean().optional().default(false),
+  position: z.number().optional().default(0),
+  archived: z.boolean().optional().default(false),
+  archived_at: z.string().nullable().optional().default(null),
+  created_at: z.string().optional().default(""),
+  updated_at: z.string().optional().default(""),
+}).loose();
+
+export const EMPTY_ISSUE_STATUS_DEFINITION: IssueStatusDefinition = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  description: "",
+  icon: "todo",
+  color: "muted-foreground",
+  category: "todo",
+  system_key: null,
+  is_system: false,
+  is_default: false,
+  position: 0,
+  archived: false,
+  archived_at: null,
+  created_at: "",
+  updated_at: "",
+};
+
+export const IssueStatusCatalogSchema = z.object({
+  statuses: z.array(IssueStatusDefinitionSchema).default([]),
+  category_defaults: z.record(z.string(), z.string()).default({}),
+  aliases: z.record(z.string(), z.string()).default({}),
+  total: z.number().default(0),
+}).loose();
+
+/**
+ * Fallback for a malformed catalog response. Empty rather than the 7 built-ins:
+ * callers treat an empty catalog as "not loaded yet" and keep rendering issues
+ * off the legacy `status` token, which is always present.
+ */
+export const EMPTY_ISSUE_STATUS_CATALOG: IssueStatusCatalog = {
+  statuses: [],
+  category_defaults: {},
+  aliases: {},
+  total: 0,
+};
+
 export const IssueSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
@@ -462,6 +541,14 @@ export const IssueSchema = z.object({
   properties: IssuePropertyValuesSchema,
   reactions: z.array(z.unknown()).optional(),
   labels: z.array(z.unknown()).optional(),
+  // Custom-status catalog fields (MUL-4809). Optional (absent on older backends
+  // and on endpoints that don't hydrate them) + nullable (null when the issue has
+  // no status_id yet). `.catch(null)` isolates malformed data to THIS field —
+  // a bad status_id/status_detail degrades to null and the issue (and the whole
+  // list) still parses, per the §7.3 safe-degrade rule — the client then falls
+  // back to the legacy `status` token.
+  status_id: z.string().nullish().catch(null),
+  status_detail: StatusDetailSchema.nullish().catch(null),
   created_at: z.string(),
   updated_at: z.string(),
 }).loose();
@@ -615,6 +702,26 @@ export const EMPTY_CLOUD_RUNTIME_NODE: CloudRuntimeNode = {
   updated_at: "",
 };
 
+export const AgentRuntimeBindingSchema = z.object({
+  agent_id: z.string(),
+  user_id: z.string(),
+  runtime_id: z.string().nullable().default(null),
+  effective_runtime_id: z.string(),
+  bound: z.boolean().default(false),
+  created_at: z.string().nullable().default(null),
+  updated_at: z.string().nullable().default(null),
+}).loose();
+
+export const EMPTY_AGENT_RUNTIME_BINDING: AgentRuntimeBinding = {
+  agent_id: "",
+  user_id: "",
+  runtime_id: null,
+  effective_runtime_id: "",
+  bound: false,
+  created_at: null,
+  updated_at: null,
+};
+
 // ---------------------------------------------------------------------------
 // Workspace dashboard schemas
 //
@@ -696,6 +803,15 @@ const RuntimeHourlyActivitySchema = z.object({
 }).loose();
 
 export const RuntimeHourlyActivityListSchema = z.array(RuntimeHourlyActivitySchema);
+
+const AgentActivityBucketSchema = z.object({
+  agent_id: z.string().default(""),
+  date: z.string().default(""),
+  task_count: z.number().default(0),
+  failed_count: z.number().default(0),
+}).loose();
+
+export const AgentActivityBucketListSchema = z.array(AgentActivityBucketSchema);
 
 const RuntimeUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
@@ -1208,6 +1324,7 @@ export const AutopilotRunSchema = z.object({
   task_id: z.string().nullable().default(null),
   triggered_at: z.string().default(""),
   completed_at: z.string().nullable().default(null),
+  recovered_at: z.string().nullable().optional(),
   failure_reason: z.string().nullable().default(null),
   reason_code: z.string().optional(),
   trigger_payload: z.unknown().default(null),
@@ -1225,6 +1342,7 @@ export const FALLBACK_AUTOPILOT_RUN: AutopilotRun = {
   task_id: null,
   triggered_at: "",
   completed_at: null,
+  recovered_at: null,
   failure_reason: null,
   trigger_payload: null,
   result: null,

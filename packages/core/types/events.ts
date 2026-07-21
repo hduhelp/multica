@@ -1,5 +1,6 @@
 import type { Issue, IssueMetadata, IssueReaction } from "./issue";
 import type { IssueProperty, IssuePropertyValues } from "./property";
+import type { IssueStatusDefinition } from "./issue";
 import type { Agent } from "./agent";
 import type { InboxItem } from "./inbox";
 import type { Comment, Reaction } from "./comment";
@@ -20,6 +21,7 @@ export type WSEventType =
   | "comment:unresolved"
   | "agent:status"
   | "agent:created"
+  | "agent:updated"
   | "agent:archived"
   | "agent:restored"
   | "task:queued"
@@ -74,6 +76,8 @@ export type WSEventType =
   | "issue_properties:changed"
   | "property:created"
   | "property:updated"
+  | "issue_status:created"
+  | "issue_status:updated"
   | "pin:created"
   | "pin:deleted"
   | "pin:reordered"
@@ -137,11 +141,27 @@ export interface PropertyChangedPayload {
   property: IssueProperty;
 }
 
+/**
+ * Status-catalog change. `status` carries the full definition on create/update;
+ * an ARCHIVE arrives as an update carrying only `status_id` + `archived`, since
+ * statuses are never hard-deleted. Both shapes just invalidate the catalog, so
+ * every field is optional here.
+ */
+export interface IssueStatusChangedPayload {
+  status?: IssueStatusDefinition;
+  status_id?: string;
+  archived?: boolean;
+}
+
 export interface AgentStatusPayload {
   agent: Agent;
 }
 
 export interface AgentCreatedPayload {
+  agent: Agent;
+}
+
+export interface AgentUpdatedPayload {
   agent: Agent;
 }
 
@@ -469,6 +489,8 @@ export interface WSEventPayloadMap {
   "issue_properties:changed": IssuePropertiesChangedPayload;
   "property:created": PropertyChangedPayload;
   "property:updated": PropertyChangedPayload;
+  "issue_status:created": IssueStatusChangedPayload;
+  "issue_status:updated": IssueStatusChangedPayload;
   "issue_reaction:added": IssueReactionAddedPayload;
   "issue_reaction:removed": IssueReactionRemovedPayload;
   "comment:created": CommentCreatedPayload;
@@ -480,6 +502,7 @@ export interface WSEventPayloadMap {
   "reaction:removed": ReactionRemovedPayload;
   "agent:status": AgentStatusPayload;
   "agent:created": AgentCreatedPayload;
+  "agent:updated": AgentUpdatedPayload;
   "agent:archived": AgentArchivedPayload;
   "agent:restored": AgentRestoredPayload;
   "task:queued": TaskQueuedPayload;

@@ -179,6 +179,30 @@ func decodeSkillConfig(raw []byte) any {
 	return config
 }
 
+func skillConfigMap(raw []byte) map[string]any {
+	var config map[string]any
+	if raw != nil {
+		_ = json.Unmarshal(raw, &config)
+	}
+	if config == nil {
+		config = map[string]any{}
+	}
+	return config
+}
+
+func skillOriginSourceURL(raw []byte) (string, bool) {
+	config := skillConfigMap(raw)
+	origin, ok := config["origin"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	sourceURL, ok := origin["source_url"].(string)
+	if !ok || strings.TrimSpace(sourceURL) == "" {
+		return "", false
+	}
+	return sourceURL, true
+}
+
 func skillSummaryToResponse(
 	id, workspaceID pgtype.UUID,
 	name, description string,
@@ -609,6 +633,20 @@ type importedSkill struct {
 	files       []importedFile
 	bundleSize  int            // running sum of file content bytes for cap enforcement
 	origin      map[string]any // written into skill.config.origin so the UI can show provenance
+}
+
+func importedSkillFiles(imported *importedSkill) []CreateSkillFileRequest {
+	files := make([]CreateSkillFileRequest, 0, len(imported.files))
+	for _, f := range imported.files {
+		if !validateFilePath(f.path) {
+			continue
+		}
+		files = append(files, CreateSkillFileRequest{
+			Path:    f.path,
+			Content: f.content,
+		})
+	}
+	return files
 }
 
 type importedFile struct {
@@ -2051,6 +2089,108 @@ func (h *Handler) finishSkillImport(w http.ResponseWriter, r *http.Request, work
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+func (h *Handler) SyncSkillFromOrigin(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	skill, ok := h.loadSkillForUser(w, r, id)
+	if !ok {
+		return
+	}
+	if !h.canManageSkill(w, r, skill) {
+		return
+	}
+
+	sourceURL, ok := skillOriginSourceURL(skill.Config)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "skill has no remote source_url to sync from")
+		return
+	}
+
+	source, normalized, err := detectImportSource(sourceURL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	var imported *importedSkill
+	switch source {
+	case sourceClawHub:
+		imported, err = fetchFromClawHub(httpClient, normalized)
+	case sourceSkillsSh:
+		imported, err = fetchFromSkillsSh(httpClient, normalized)
+	case sourceGitHub:
+		imported, err = fetchFromGitHub(httpClient, normalized)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	config := skillConfigMap(skill.Config)
+	if imported.origin != nil {
+		config["origin"] = imported.origin
+	}
+	config["last_synced_at"] = time.Now().UTC().Format(time.RFC3339)
+	configJSON, _ := json.Marshal(config)
+	files := importedSkillFiles(imported)
+
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	updated, err := qtx.UpdateSkill(r.Context(), db.UpdateSkillParams{
+		ID:          skill.ID,
+		Name:        pgtype.Text{String: sanitizeNullBytes(imported.name), Valid: true},
+		Description: pgtype.Text{String: sanitizeNullBytes(imported.description), Valid: true},
+		Content:     pgtype.Text{String: sanitizeNullBytes(imported.content), Valid: true},
+		Config:      configJSON,
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "a skill with this name already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to update skill: "+err.Error())
+		return
+	}
+
+	if err := qtx.DeleteSkillFilesBySkill(r.Context(), updated.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete old skill files")
+		return
+	}
+	fileResps := make([]SkillFileResponse, 0, len(files))
+	for _, f := range files {
+		sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
+			SkillID: updated.ID,
+			Path:    sanitizeNullBytes(f.Path),
+			Content: sanitizeNullBytes(f.Content),
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to upsert skill file: "+err.Error())
+			return
+		}
+		fileResps = append(fileResps, skillFileToResponse(sf))
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
+
+	resp := SkillWithFilesResponse{
+		SkillResponse: skillToResponse(updated),
+		Files:         fileResps,
+	}
+	wsID := uuidToString(updated.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, requestUserID(r), wsID)
+	h.publish(protocol.EventSkillUpdated, wsID, actorType, actorID, map[string]any{"skill": resp})
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // --- Skill File endpoints ---
 
 func (h *Handler) ListSkillFiles(w http.ResponseWriter, r *http.Request) {
@@ -2108,6 +2248,7 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.publishSkillFilesChanged(r, skill)
 	writeJSON(w, http.StatusOK, skillFileToResponse(sf))
 }
 
@@ -2137,7 +2278,33 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete skill file")
 		return
 	}
+	h.publishSkillFilesChanged(r, skill)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// publishSkillFilesChanged broadcasts skill:updated after an incremental
+// file mutation (UpsertSkillFile / DeleteSkillFile). UpdateSkill already
+// publishes the same event with the same payload shape when it replaces
+// files wholesale; without this, per-file edits are invisible to WS
+// consumers (stale skill lists, external mirrors). Best-effort: a failed
+// reload skips the broadcast rather than failing the completed mutation.
+func (h *Handler) publishSkillFilesChanged(r *http.Request, skill db.Skill) {
+	files, err := h.Queries.ListSkillFiles(r.Context(), skill.ID)
+	if err != nil {
+		slog.Warn("list skill files for skill:updated broadcast failed", "error", err, "skill_id", uuidToString(skill.ID))
+		return
+	}
+	fileResps := make([]SkillFileResponse, len(files))
+	for i, f := range files {
+		fileResps[i] = skillFileToResponse(f)
+	}
+	resp := SkillWithFilesResponse{
+		SkillResponse: skillToResponse(skill),
+		Files:         fileResps,
+	}
+	wsID := uuidToString(skill.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, requestUserID(r), wsID)
+	h.publish(protocol.EventSkillUpdated, wsID, actorType, actorID, map[string]any{"skill": resp})
 }
 
 // --- Agent-Skill junction ---

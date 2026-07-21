@@ -22,6 +22,7 @@ const (
 	// Agent events
 	EventAgentStatus   = "agent:status"
 	EventAgentCreated  = "agent:created"
+	EventAgentUpdated  = "agent:updated"
 	EventAgentArchived = "agent:archived"
 	EventAgentRestored = "agent:restored"
 
@@ -102,6 +103,14 @@ const (
 	EventPropertyUpdated        = "property:updated"
 	EventIssuePropertiesChanged = "issue_properties:changed"
 
+	// Issue relation events ({"issue_ids": [source, target]}).
+	EventIssueRelationsChanged = "issue_relations:changed"
+
+	// Custom issue status catalog events (MUL-4809). Statuses are archived,
+	// never hard-deleted, so archive arrives as issue_status:updated.
+	EventIssueStatusCreated = "issue_status:created"
+	EventIssueStatusUpdated = "issue_status:updated"
+
 	// Pin events
 	EventPinCreated   = "pin:created"
 	EventPinDeleted   = "pin:deleted"
@@ -139,6 +148,10 @@ const (
 	// HTTP fallback) and any future daemon→server RPC.
 	EventDaemonRPCRequest  = "daemon:rpc_request"
 	EventDaemonRPCResponse = "daemon:rpc_response"
+
+	// Runtime hold events
+	EventRuntimeHeld    = "runtime:held"
+	EventRuntimeResumed = "runtime:resumed"
 
 	// GitHub integration events
 	EventGitHubInstallationCreated = "github_installation:created"

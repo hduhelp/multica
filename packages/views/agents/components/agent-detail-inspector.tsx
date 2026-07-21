@@ -1,15 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { RotateCcw } from "lucide-react";
 import type {
   Agent,
   AgentRuntime,
+  AgentRuntimeBinding,
+  FixedRepoVcsType,
   MemberWithUser,
 } from "@multica/core/types";
 import { AGENT_DESCRIPTION_MAX_LENGTH } from "@multica/core/agents";
 import { isImeComposing } from "@multica/core/utils";
+import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
+import { Switch } from "@multica/ui/components/ui/switch";
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@multica/ui/components/ui/native-select";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import {
   SettingsCard,
@@ -24,15 +33,19 @@ import { ResourceLabelPicker } from "../../labels/resource-label-picker";
 import { ModelPicker } from "./inspector/model-picker";
 import { RuntimePicker } from "./inspector/runtime-picker";
 import { ThinkingSettingField } from "./inspector/thinking-prop-row";
+import { WaitTimeoutPicker } from "./inspector/wait-timeout-picker";
 
 interface InspectorProps {
   agent: Agent;
   runtime: AgentRuntime | null;
+  runtimeBinding: AgentRuntimeBinding | null;
   runtimes: AgentRuntime[];
   members: MemberWithUser[];
   currentUserId: string | null;
   canEdit: boolean;
   onUpdate: (id: string, data: Record<string, unknown>) => Promise<void>;
+  onRuntimeBindingChange: (id: string, runtimeId: string) => Promise<void>;
+  onRuntimeBindingClear: (id: string) => Promise<void>;
 }
 
 interface ProfileDraft {
@@ -52,11 +65,14 @@ function profileDraftsEqual(left: ProfileDraft, right: ProfileDraft) {
 export function AgentDetailInspector({
   agent,
   runtime,
+  runtimeBinding,
   runtimes,
   members,
   currentUserId,
   canEdit,
   onUpdate,
+  onRuntimeBindingChange,
+  onRuntimeBindingClear,
 }: InspectorProps) {
   const { t } = useT("agents");
   const { t: ts } = useT("settings");
@@ -106,6 +122,9 @@ export function AgentDetailInspector({
 
   const isOnline = runtime?.status === "online";
   const nameInvalid = name.trim().length === 0;
+  const effectiveRuntimeID =
+    runtimeBinding?.effective_runtime_id || agent.runtime_id;
+  const canBindRuntime = !!currentUserId && !agent.archived_at;
 
   return (
     <div className="space-y-8">
@@ -230,6 +249,36 @@ export function AgentDetailInspector({
             />
           </SettingsRow>
           <SettingsRow
+            label={t(($) => $.inspector.prop_my_runtime)}
+            size="select-wide"
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <RuntimePicker
+                variant="field"
+                showLabel={false}
+                value={effectiveRuntimeID}
+                runtimes={runtimes}
+                members={members}
+                currentUserId={currentUserId}
+                canEdit={canBindRuntime}
+                onChange={(id) => onRuntimeBindingChange(agent.id, id)}
+              />
+              {runtimeBinding?.bound && canBindRuntime ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  aria-label={t(($) => $.inspector.reset_my_runtime_aria)}
+                  title={t(($) => $.inspector.reset_my_runtime_aria)}
+                  onClick={() => onRuntimeBindingClear(agent.id)}
+                >
+                  <RotateCcw className="h-4 w-4" />
+                </Button>
+              ) : null}
+            </div>
+          </SettingsRow>
+          <SettingsRow
             label={t(($) => $.inspector.prop_model)}
             size="select-wide"
           >
@@ -265,9 +314,241 @@ export function AgentDetailInspector({
               onSave={(next) => update({ max_concurrent_tasks: next })}
             />
           </SettingsRow>
+          <SettingsRow
+            label={t(($) => $.inspector.prop_wait_timeout)}
+            size="select-wide"
+          >
+            <WaitTimeoutPicker
+              valueSeconds={agent.queued_ttl_seconds}
+              canEdit={canEdit}
+              onChange={(seconds) => update({ queued_ttl_seconds: seconds })}
+            />
+          </SettingsRow>
         </SettingsCard>
       </SettingsSection>
+
+      {/* Fixed repo mode is a local-runtime-only capability: the agent runs in
+          a pre-existing directory on the daemon host instead of a per-task
+          worktree. Hide the whole section for cloud runtimes where it cannot
+          apply. */}
+      {runtime?.runtime_mode === "local" && (
+        <SettingsSection
+          title={t(($) => $.inspector.section_fixed_repo)}
+          description={t(($) => $.inspector.section_fixed_repo_hint)}
+        >
+          <SettingsCard>
+            <FixedRepoSettings agent={agent} canEdit={canEdit} update={update} />
+          </SettingsCard>
+        </SettingsSection>
+      )}
     </div>
+  );
+}
+
+const FIXED_REPO_VCS_TYPES: FixedRepoVcsType[] = [
+  "git",
+  "perforce",
+  "none",
+  "custom",
+];
+const MAX_FIXED_REPO_PATHS = 16;
+
+function pathsToText(paths: string[] | undefined): string {
+  return (paths ?? []).join("\n");
+}
+
+function textToPaths(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * Fixed repo configuration: an enable toggle plus the path pool, VCS type, and
+ * an (advisory) cleanup script. Only rendered for local runtimes. Each control
+ * persists through the same `update` funnel as the rest of the inspector; the
+ * path list and cleanup script commit on blur, the toggle and VCS select
+ * commit immediately.
+ */
+function FixedRepoSettings({
+  agent,
+  canEdit,
+  update,
+}: {
+  agent: Agent;
+  canEdit: boolean;
+  update: (data: Record<string, unknown>) => Promise<void>;
+}) {
+  const { t } = useT("agents");
+  const enabled = agent.fixed_repo_enabled === true;
+  // Local draft for the toggle. The server rejects fixed_repo_enabled=true with
+  // empty fixed_repo_paths, so we can't persist the enable the moment the switch
+  // flips — the paths field only appears afterwards. Instead we reveal the
+  // config on the local draft and defer the enable write until paths exist,
+  // committing fixed_repo_enabled and fixed_repo_paths together (see commitPaths).
+  const [enabledDraft, setEnabledDraft] = useState(enabled);
+  const [pathsDraft, setPathsDraft] = useState(
+    pathsToText(agent.fixed_repo_paths),
+  );
+  const [cleanupDraft, setCleanupDraft] = useState(
+    agent.fixed_repo_cleanup_script ?? "",
+  );
+
+  useEffect(() => {
+    setEnabledDraft(enabled);
+    setPathsDraft(pathsToText(agent.fixed_repo_paths));
+    setCleanupDraft(agent.fixed_repo_cleanup_script ?? "");
+  }, [agent.id, enabled, agent.fixed_repo_paths, agent.fixed_repo_cleanup_script]);
+
+  const commitPaths = () => {
+    const next = textToPaths(pathsDraft);
+    // Normalize the textarea to the parsed form so the user sees exactly what
+    // will be saved (blank lines / trailing spaces removed).
+    setPathsDraft(next.join("\n"));
+    // Never send an enable with empty paths — the server rejects it and the
+    // required hint already tells the user what's missing.
+    if (next.length === 0) return;
+    const current = agent.fixed_repo_paths ?? [];
+    const pathsChanged =
+      next.length !== current.length ||
+      next.some((p, i) => p !== current[i]);
+    // First time paths become valid after toggling on: persist the enable and
+    // paths in one write so the coupled invariant holds server-side.
+    if (enabledDraft && !enabled) {
+      void update({ fixed_repo_enabled: true, fixed_repo_paths: next });
+    } else if (pathsChanged) {
+      void update({ fixed_repo_paths: next });
+    }
+  };
+
+  const onToggle = (checked: boolean) => {
+    setEnabledDraft(checked);
+    if (!checked) {
+      // Disabling is always valid; persist immediately.
+      void update({ fixed_repo_enabled: false });
+    } else if (textToPaths(pathsDraft).length > 0) {
+      // Re-enabling when paths are already filled in: persist right away.
+      void update({
+        fixed_repo_enabled: true,
+        fixed_repo_paths: textToPaths(pathsDraft),
+      });
+    }
+    // Otherwise wait for the user to enter paths; commitPaths finishes the enable.
+  };
+
+  const commitCleanup = () => {
+    const trimmed = cleanupDraft.trim();
+    const current = agent.fixed_repo_cleanup_script ?? "";
+    if (trimmed === current) return;
+    // Send null to clear the field so the server resets it (tri-state update).
+    void update({ fixed_repo_cleanup_script: trimmed === "" ? null : trimmed });
+  };
+
+  const parsedCount = textToPaths(pathsDraft).length;
+
+  return (
+    <>
+      <SettingsRow
+        label={t(($) => $.inspector.prop_fixed_repo_enabled)}
+        size="select-wide"
+      >
+        <Switch
+          checked={enabledDraft}
+          disabled={!canEdit}
+          onCheckedChange={onToggle}
+          aria-label={t(($) => $.inspector.prop_fixed_repo_enabled)}
+        />
+      </SettingsRow>
+
+      {enabledDraft && (
+        <>
+          <SettingsRow
+            label={t(($) => $.inspector.prop_fixed_repo_paths)}
+            align="start"
+          >
+            <div>
+              <Textarea
+                value={pathsDraft}
+                disabled={!canEdit}
+                onChange={(event) => setPathsDraft(event.target.value)}
+                onBlur={commitPaths}
+                rows={4}
+                spellCheck={false}
+                placeholder={t(
+                  ($) => $.inspector.fixed_repo_paths_placeholder,
+                )}
+                aria-label={t(($) => $.inspector.prop_fixed_repo_paths)}
+                className="font-mono text-xs"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t(($) => $.inspector.fixed_repo_paths_hint, {
+                  max: MAX_FIXED_REPO_PATHS,
+                })}
+              </p>
+              {parsedCount === 0 && (
+                <p className="mt-1 text-xs text-destructive">
+                  {t(($) => $.inspector.fixed_repo_paths_required)}
+                </p>
+              )}
+              {parsedCount > MAX_FIXED_REPO_PATHS && (
+                <p className="mt-1 text-xs text-destructive">
+                  {t(($) => $.inspector.fixed_repo_paths_limit, {
+                    max: MAX_FIXED_REPO_PATHS,
+                  })}
+                </p>
+              )}
+            </div>
+          </SettingsRow>
+
+          <SettingsRow
+            label={t(($) => $.inspector.prop_fixed_repo_vcs_type)}
+            size="select-wide"
+          >
+            <NativeSelect
+              value={agent.fixed_repo_vcs_type ?? "git"}
+              disabled={!canEdit}
+              onChange={(event) =>
+                update({
+                  fixed_repo_vcs_type: event.target
+                    .value as FixedRepoVcsType,
+                })
+              }
+              aria-label={t(($) => $.inspector.prop_fixed_repo_vcs_type)}
+            >
+              {FIXED_REPO_VCS_TYPES.map((vcs) => (
+                <NativeSelectOption key={vcs} value={vcs}>
+                  {t(($) => $.inspector.fixed_repo_vcs_options[vcs])}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </SettingsRow>
+
+          <SettingsRow
+            label={t(($) => $.inspector.prop_fixed_repo_cleanup)}
+            align="start"
+          >
+            <div>
+              <Input
+                value={cleanupDraft}
+                disabled={!canEdit}
+                onChange={(event) => setCleanupDraft(event.target.value)}
+                onBlur={commitCleanup}
+                spellCheck={false}
+                placeholder={t(
+                  ($) => $.inspector.fixed_repo_cleanup_placeholder,
+                )}
+                aria-label={t(($) => $.inspector.prop_fixed_repo_cleanup)}
+                className="font-mono text-xs"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t(($) => $.inspector.fixed_repo_cleanup_hint)}
+              </p>
+            </div>
+          </SettingsRow>
+        </>
+      )}
+    </>
   );
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -102,6 +103,7 @@ func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handle
 			sweepStaleTasks(ctx, queries, taskSvc, bus)
 			sweepExpiredQueuedTasks(ctx, queries, taskSvc)
 			sweepDeferredChatFinalizations(ctx, queries, taskSvc)
+			sweepExpiredHolds(ctx, queries, bus)
 			gcRuntimes(ctx, queries, bus)
 		}
 	}
@@ -239,6 +241,13 @@ func gcRuntimes(ctx context.Context, queries *db.Queries, bus *events.Bus) {
 	gcWorkspaces := make(map[string]bool)
 	for _, row := range deleted {
 		gcWorkspaces[util.UUIDToString(row.WorkspaceID)] = true
+		// Backstop: release any fixed repo path locks still attributed to a
+		// runtime being permanently removed. Per-task terminal releases are the
+		// primary path; this guards the residual case where a lock outlived its
+		// task (idempotent — normally releases nothing).
+		if err := queries.ReleaseFixedRepoLocksByRuntime(ctx, row.ID); err != nil {
+			slog.Warn("runtime GC: failed to release fixed repo locks", "runtime_id", util.UUIDToString(row.ID), "error", err)
+		}
 	}
 
 	slog.Info("runtime GC: deleted stale offline runtimes", "count", len(deleted), "workspaces", len(gcWorkspaces))
@@ -336,6 +345,49 @@ func sweepDeferredChatFinalizations(ctx context.Context, queries *db.Queries, ta
 	slog.Info("chat finalize sweeper: settled deferred cancellations", "count", len(rows))
 }
 
+// sweepExpiredHolds clears holds on runtimes whose hold_until has passed.
+// After clearing, it broadcasts a daemon:register event so connected clients
+// refresh the runtime list and the daemon can pick up queued tasks.
+func sweepExpiredHolds(ctx context.Context, queries *db.Queries, bus *events.Bus) {
+	released, err := queries.ClearExpiredHolds(ctx, service.HoldExpiryMargin.Seconds())
+	if err != nil {
+		slog.Warn("runtime sweeper: failed to clear expired holds", "error", err)
+		return
+	}
+	if len(released) == 0 {
+		return
+	}
+
+	workspaces := make(map[string]bool)
+	for _, row := range released {
+		slog.Info("runtime hold expired, resuming",
+			"runtime_id", util.UUIDToString(row.ID),
+		)
+		wsID := util.UUIDToString(row.WorkspaceID)
+		workspaces[wsID] = true
+		bus.Publish(events.Event{
+			Type:        protocol.EventRuntimeResumed,
+			WorkspaceID: wsID,
+			ActorType:   "system",
+			Payload: map[string]any{
+				"runtime_id": util.UUIDToString(row.ID),
+				"auto":       true,
+			},
+		})
+	}
+
+	for wsID := range workspaces {
+		bus.Publish(events.Event{
+			Type:        protocol.EventDaemonRegister,
+			WorkspaceID: wsID,
+			ActorType:   "system",
+			Payload: map[string]any{
+				"action": "hold_expired",
+			},
+		})
+	}
+}
+
 // broadcastFailedTasks is preserved as a thin shim for the integration tests
 // in this package. New call sites should use TaskService.HandleFailedTasks
 // directly so the side effects (event broadcast, agent reconcile, issue
@@ -359,7 +411,9 @@ func broadcastFailedTasks(ctx context.Context, queries *db.Queries, taskSvc *ser
 			if issue, err := queries.GetIssue(ctx, t.IssueID); err == nil {
 				workspaceID = util.UUIDToString(issue.WorkspaceID)
 				issueKey := util.UUIDToString(t.IssueID)
-				if issue.Status == "in_progress" && !processedIssues[issueKey] {
+				// Category is the machine semantics (MUL-4809 §4.2): in_review /
+				// blocked are in_progress and must reset like any in_progress issue.
+				if issuestatus.CategoryForStatusToken(issue.Status) == "in_progress" && !processedIssues[issueKey] {
 					processedIssues[issueKey] = true
 					if hasActive, herr := queries.HasActiveTaskForIssue(ctx, t.IssueID); herr == nil && !hasActive {
 						queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: t.IssueID, Status: "todo", WorkspaceID: issue.WorkspaceID})

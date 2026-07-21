@@ -8,7 +8,13 @@ export const agentTaskSnapshotKeys = {
 
 export const agentActivityKeys = {
   all: (wsId: string) => ["workspaces", wsId, "agent-activity"] as const,
-  last30d: (wsId: string) => [...agentActivityKeys.all(wsId), "30d"] as const,
+  // Prefix without tz — invalidation targets every tz variant at once.
+  last30dAll: (wsId: string) =>
+    [...agentActivityKeys.all(wsId), "30d"] as const,
+  // tz is part of the fetch key: the backend cuts the daily buckets in the
+  // viewer's timezone, so a tz change is a different dataset.
+  last30d: (wsId: string, tz: string) =>
+    [...agentActivityKeys.last30dAll(wsId), tz] as const,
 };
 
 export const agentRunCountsKeys = {
@@ -41,10 +47,10 @@ export function agentTaskSnapshotOptions(wsId: string) {
 // the agent detail "Last 30 days" panel. WS task lifecycle events
 // invalidate this query in useRealtimeSync; the staleTime is a
 // tab-focus safety net.
-export function agentActivity30dOptions(wsId: string) {
+export function agentActivity30dOptions(wsId: string, tz: string) {
   return queryOptions({
-    queryKey: agentActivityKeys.last30d(wsId),
-    queryFn: () => api.getWorkspaceAgentActivity30d(),
+    queryKey: agentActivityKeys.last30d(wsId, tz),
+    queryFn: () => api.getWorkspaceAgentActivity30d({ tz }),
     staleTime: 60 * 1000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: true,
@@ -69,6 +75,12 @@ export const agentTasksKeys = {
     [...agentTasksKeys.all(wsId), agentId] as const,
 };
 
+export const agentRuntimeBindingKeys = {
+  all: (wsId: string) => ["workspaces", wsId, "agent-runtime-bindings"] as const,
+  detail: (wsId: string, agentId: string) =>
+    [...agentRuntimeBindingKeys.all(wsId), agentId] as const,
+};
+
 // All tasks for a single agent (the agent detail page consumer). Powers both
 // the inspector's 7-day throughput stats and the Tasks tab list — shared so
 // they don't fetch twice. WS task events invalidate this via the existing
@@ -80,6 +92,15 @@ export function agentTasksOptions(wsId: string, agentId: string) {
     staleTime: 30 * 1000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: true,
+  });
+}
+
+export function agentRuntimeBindingOptions(wsId: string, agentId: string) {
+  return queryOptions({
+    queryKey: agentRuntimeBindingKeys.detail(wsId, agentId),
+    queryFn: () => api.getAgentRuntimeBinding(agentId),
+    staleTime: 30 * 1000,
+    gcTime: 5 * 60 * 1000,
   });
 }
 

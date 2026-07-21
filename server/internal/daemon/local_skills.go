@@ -37,9 +37,10 @@ type runtimeLocalSkillSummary struct {
 	// Older daemons that predate multi-root discovery omit the field; the
 	// server treats an empty value as "unknown" rather than a provider/
 	// universal assertion.
-	Root      string `json:"root,omitempty"`
-	Plugin    string `json:"plugin,omitempty"`
-	FileCount int    `json:"file_count"`
+	Root       string `json:"root,omitempty"`
+	Plugin     string `json:"plugin,omitempty"`
+	CanDisable bool   `json:"can_disable,omitempty"`
+	FileCount  int    `json:"file_count"`
 }
 
 type runtimeLocalSkillBundle struct {
@@ -105,6 +106,7 @@ const (
 //   - Antigravity: ~/.gemini/antigravity-cli/skills user-level skill root
 //     (https://antigravity.google/docs/gcli-migration "Global skills")
 //   - Grok: $GROK_HOME/skills, defaulting to ~/.grok/skills
+//   - Qwen Code: $QWEN_HOME/skills, defaulting to ~/.qwen/skills
 //
 // The universal ~/.agents/skills root is documented as a cross-tool skill
 // location by Codex (https://developers.openai.com/codex/skills) and Gemini
@@ -175,6 +177,15 @@ func localSkillRootsForProvider(provider string) ([]localSkillRoot, bool, error)
 			grokHome = filepath.Join(home, ".grok")
 		}
 		providerRoot = filepath.Join(grokHome, "skills")
+	case "qwen":
+		// QWEN_HOME replaces Qwen Code's global ~/.qwen directory. It owns
+		// settings, sessions, credentials and personal skills; project
+		// .qwen/skills remains rooted in the task workdir.
+		qwenHome := strings.TrimSpace(os.Getenv("QWEN_HOME"))
+		if qwenHome == "" {
+			qwenHome = filepath.Join(home, ".qwen")
+		}
+		providerRoot = filepath.Join(qwenHome, "skills")
 	default:
 		return nil, false, nil
 	}
@@ -480,6 +491,7 @@ func enumerateLocalSkills(
 				Provider:    provider,
 				Root:        root.kind,
 				Plugin:      root.plugin,
+				CanDisable:  provider == "codex" || provider == "claude",
 				// `files` is the supporting bundle (collectLocalSkillFiles
 				// intentionally excludes SKILL.md so the bundle's `Content`
 				// field can carry it without duplication on import). For the

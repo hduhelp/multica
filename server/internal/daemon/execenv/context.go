@@ -131,6 +131,7 @@ func writeWorkspacesRootMarkerAtomic(path string, data []byte) error {
 // Kimi:        skills → {workDir}/.kimi/skills/{name}/SKILL.md  (native discovery)
 // Kiro:        skills → {workDir}/.kiro/skills/{name}/SKILL.md  (native discovery)
 // Qoder:       skills → {workDir}/.qoder/skills/{name}/SKILL.md  (project-level; see docs.qoder.com/cli/Skills.md)
+// Qwen Code:    skills → {workDir}/.qwen/skills/{name}/SKILL.md  (native project-level discovery)
 // Antigravity: skills → {workDir}/.agents/skills/{name}/SKILL.md  (native discovery — see https://antigravity.google/docs/gcli-migration "Workspace skills")
 // Default:     skills → {workDir}/.agent_context/skills/{name}/SKILL.md
 //
@@ -388,6 +389,9 @@ func skillsDirPath(workDir, provider string) string {
 		// Qoder CLI discovers project-level skills under .qoder/skills/.
 		// See https://docs.qoder.com/cli/Skills.md
 		return filepath.Join(workDir, ".qoder", "skills")
+	case "qwen":
+		// Qwen Code discovers project-level skills from .qwen/skills/ in the workdir.
+		return filepath.Join(workDir, ".qwen", "skills")
 	case "traecli":
 		// Official TRAE CLI discovers project-level skills from .traecli/skills/
 		// in the workdir (global skills live in ~/.traecli/skills). See
@@ -703,6 +707,36 @@ func renderIssueContext(provider string, ctx TaskContextForEnv) string {
 		b.WriteString("\n")
 	}
 
+	b.WriteString(renderFixedRepoSection(ctx))
+
+	return b.String()
+}
+
+// renderFixedRepoSection produces VCS-appropriate safe-practice guidance for a
+// fixed repo task, or an empty string when the task is not in fixed repo mode.
+// The agent works directly in the pre-existing directory and must manage VCS
+// operations itself; `multica repo checkout` is disabled for the run.
+func renderFixedRepoSection(ctx TaskContextForEnv) string {
+	if !ctx.FixedRepoMode {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Fixed Repo\n\n")
+	fmt.Fprintf(&b, "You are working directly in an existing directory on this machine: `%s`.\n", ctx.FixedRepoPath)
+	b.WriteString("This is your working directory for the whole task — it is NOT a fresh checkout.\n\n")
+	b.WriteString("- Do not run `multica repo checkout`; it is disabled for this task and will error.\n")
+	b.WriteString("- Do not `git clone` or otherwise replace this directory. Work in place.\n")
+	switch ctx.FixedRepoVcsType {
+	case "git":
+		b.WriteString("- Version control: **git**. Use `git status` / `git diff` to see the current state before editing. Create a branch and commit as usual, but never force-push or reset the user's uncommitted work without being asked.\n")
+	case "perforce":
+		b.WriteString("- Version control: **Perforce**. Use `p4` (e.g. `p4 status`, `p4 edit`) to open files for edit before changing them. Do not revert or shelve the user's pending changelists unless explicitly asked.\n")
+	case "none":
+		b.WriteString("- Version control: **none**. This directory is not under version control; there is no automatic undo, so change files conservatively and explain what you modified.\n")
+	default:
+		b.WriteString("- Version control: **custom**. Use the directory's own tooling to inspect and record changes; do not assume git.\n")
+	}
+	b.WriteString("\n")
 	return b.String()
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueguard"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -69,6 +71,28 @@ type IssueResponse struct {
 	// preserves whatever labels are already in cache. nil pointer = "field
 	// absent, do not touch"; non-nil (incl. empty slice) = authoritative list.
 	Labels *[]LabelResponse `json:"labels,omitempty"`
+	// StatusID / StatusDetail are the resolved custom-status catalog view of this
+	// issue (MUL-4809 read side), bulk-attached by the list/detail endpoints like
+	// Labels. StatusID is the authoritative issue_status the issue points at;
+	// StatusDetail carries its human-facing name/icon/color plus the Category (the
+	// only machine semantics). Both are nil when the issue has no status_id yet
+	// (workspace catalog not seeded) or on paths that don't hydrate them — the
+	// client then falls back to the legacy `status` token. Legacy `status` stays
+	// authoritative this phase; these fields are additive and optional.
+	StatusID     *string            `json:"status_id,omitempty"`
+	StatusDetail *IssueStatusDetail `json:"status_detail,omitempty"`
+}
+
+// IssueStatusDetail is the resolved catalog view of an issue's status (MUL-4809).
+// Category is one of the 5 immutable machine categories; name/icon/color are
+// human-facing. Sourced from the issue_status row the issue's status_id points
+// at (archived rows included, so an issue on one still renders its status).
+type IssueStatusDetail struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	Icon     string `json:"icon"`
+	Color    string `json:"color"`
 }
 
 // validIssueStatuses / validIssuePriorities mirror the CHECK constraints on
@@ -77,6 +101,96 @@ type IssueResponse struct {
 // up as a 500.
 var validIssueStatuses = []string{"backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"}
 var validIssuePriorities = []string{"urgent", "high", "medium", "low", "none"}
+
+// resolveIssueStatusInput turns the status inputs of a write request into the
+// authoritative issue_status row (MUL-4809 §3.1 / §6.1). Callers pass whichever
+// of the two the client sent:
+//
+//   - statusID targets a catalog row directly (what the UI picker sends). It must
+//     name a status in THIS workspace and must not be archived — archived statuses
+//     stay readable for old issues but must not accept new ones.
+//   - status is the alias form: Category alias, legacy alias, or exact display
+//     name, resolved by issuestatus.Resolve.
+//
+// Sending both is accepted only when they resolve to the same row; a mismatch is
+// a 400 rather than a silent winner, because either field could have been the
+// user's intent. Writes fail closed on an unknown status with the legal values.
+// It returns the resolved row plus the legacy token to write. On a workspace whose
+// catalog is not seeded yet — the Phase-2 rolling-deploy / pre-backfill window —
+// there is nothing to resolve against, so it falls back to validating the legacy
+// token and returns a zero row: `status` stays authoritative and status_id stays
+// NULL, exactly as the create path already behaves there (§6.1).
+func (h *Handler) resolveIssueStatusInput(
+	w http.ResponseWriter,
+	r *http.Request,
+	workspaceID pgtype.UUID,
+	status *string,
+	statusID *string,
+) (db.IssueStatus, string, bool) {
+	seeded, err := h.Queries.CountWorkspaceIssueStatuses(r.Context(), workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load status catalog: "+err.Error())
+		return db.IssueStatus{}, "", false
+	}
+	if seeded == 0 {
+		if statusID != nil {
+			// Nothing to target: the catalog this id would name does not exist yet.
+			writeError(w, http.StatusBadRequest, "status_id does not name a status in this workspace")
+			return db.IssueStatus{}, "", false
+		}
+		if status == nil {
+			return db.IssueStatus{}, "", true
+		}
+		if !validateIssueEnum(w, "status", *status, validIssueStatuses) {
+			return db.IssueStatus{}, "", false
+		}
+		return db.IssueStatus{}, *status, true
+	}
+
+	var byID db.IssueStatus
+	if statusID != nil {
+		parsed, err := util.ParseUUID(strings.TrimSpace(*statusID))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "status_id must be a status id")
+			return db.IssueStatus{}, "", false
+		}
+		byID, err = h.Queries.GetWorkspaceIssueStatus(r.Context(), db.GetWorkspaceIssueStatusParams{
+			ID: parsed, WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusBadRequest, "status_id does not name a status in this workspace")
+				return db.IssueStatus{}, "", false
+			}
+			writeError(w, http.StatusInternalServerError, "failed to load status: "+err.Error())
+			return db.IssueStatus{}, "", false
+		}
+		if byID.ArchivedAt.Valid {
+			writeError(w, http.StatusBadRequest, "status_id names an archived status")
+			return db.IssueStatus{}, "", false
+		}
+	}
+
+	if status == nil {
+		return byID, issuestatus.LegacyStatusToken(byID), true
+	}
+
+	byName, err := issuestatus.Resolve(r.Context(), h.Queries, workspaceID, *status)
+	if err != nil {
+		var invalid *issuestatus.InvalidStatusError
+		if errors.As(err, &invalid) {
+			writeError(w, http.StatusBadRequest, invalid.Error())
+			return db.IssueStatus{}, "", false
+		}
+		writeError(w, http.StatusInternalServerError, "failed to resolve status: "+err.Error())
+		return db.IssueStatus{}, "", false
+	}
+	if statusID != nil && uuidToString(byName.ID) != uuidToString(byID.ID) {
+		writeError(w, http.StatusBadRequest, "status and status_id refer to different statuses")
+		return db.IssueStatus{}, "", false
+	}
+	return byName, issuestatus.LegacyStatusToken(byName), true
+}
 
 func validateIssueEnum(w http.ResponseWriter, field, value string, allowed []string) bool {
 	for _, a := range allowed {
@@ -176,6 +290,109 @@ func (h *Handler) labelsByIssue(ctx context.Context, wsUUID pgtype.UUID, issueID
 		})
 	}
 	return out
+}
+
+// statusDetailsByIssue bulk-loads the resolved custom-status catalog detail for
+// the given issue IDs, keyed by issue UUID string (MUL-4809 read side). Like
+// labelsByIssue, a load failure degrades to an empty map rather than failing the
+// list call — the client falls back to the legacy `status` token. Issues whose
+// status_id is NULL (workspace catalog not seeded) are simply absent from the map.
+func (h *Handler) statusDetailsByIssue(ctx context.Context, wsUUID pgtype.UUID, issueIDs []pgtype.UUID) map[string]IssueStatusDetail {
+	out := map[string]IssueStatusDetail{}
+	if len(issueIDs) == 0 {
+		return out
+	}
+	rows, err := h.Queries.StatusDetailsByIssues(ctx, db.StatusDetailsByIssuesParams{
+		WorkspaceID: wsUUID,
+		IssueIds:    issueIDs,
+	})
+	if err != nil {
+		slog.Warn("StatusDetailsByIssues failed", "error", err)
+		return out
+	}
+	for _, r := range rows {
+		out[uuidToString(r.IssueID)] = IssueStatusDetail{
+			ID:       uuidToString(r.StatusID),
+			Name:     r.Name,
+			Category: r.Category,
+			Icon:     r.Icon,
+			Color:    r.Color,
+		}
+	}
+	return out
+}
+
+// applyStatusDetail attaches status_id + status_detail to a single response from
+// a bulk-loaded map (MUL-4809). Absent = the issue has no status_id yet; both are
+// left nil and the client falls back to the legacy `status` token.
+func applyStatusDetail(resp *IssueResponse, details map[string]IssueStatusDetail) {
+	d, ok := details[resp.ID]
+	if !ok {
+		return
+	}
+	id := d.ID
+	detail := d
+	resp.StatusID = &id
+	resp.StatusDetail = &detail
+}
+
+// hydrateStatusDetails bulk-loads status_id + status_detail for a slice of issue
+// responses in one round-trip and attaches them (MUL-4809). For read endpoints
+// that don't already build an issue-id slice (search / children). No-op on empty.
+func (h *Handler) hydrateStatusDetails(ctx context.Context, wsUUID pgtype.UUID, resps []IssueResponse) {
+	if len(resps) == 0 {
+		return
+	}
+	ids := make([]pgtype.UUID, 0, len(resps))
+	for i := range resps {
+		if u, err := util.ParseUUID(resps[i].ID); err == nil {
+			ids = append(ids, u)
+		}
+	}
+	details := h.statusDetailsByIssue(ctx, wsUUID, ids)
+	for i := range resps {
+		applyStatusDetail(&resps[i], details)
+	}
+}
+
+// parseStatusCatalogFilters reads the optional status_id / status_category list
+// filters (MUL-4809 read side) and validates them: status_id must be a UUID,
+// status_category one of the 5 Categories. On a malformed value it writes a 400
+// and returns ok=false. Empty params mean "no filter".
+func parseStatusCatalogFilters(w http.ResponseWriter, r *http.Request) (statusID pgtype.UUID, category string, ok bool) {
+	if s := strings.TrimSpace(r.URL.Query().Get("status_id")); s != "" {
+		u, err := util.ParseUUID(s)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "status_id must be a uuid")
+			return pgtype.UUID{}, "", false
+		}
+		statusID = u
+	}
+	if c := strings.TrimSpace(r.URL.Query().Get("status_category")); c != "" {
+		validated, err := validateIssueStatusCategory(c)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return pgtype.UUID{}, "", false
+		}
+		category = validated
+	}
+	return statusID, category, true
+}
+
+// appendStatusCatalogFilters adds the status_id / status_category predicates to a
+// dynamic issue-list WHERE builder (MUL-4809). status_category joins the catalog
+// via an EXISTS subquery scoped to the same workspace (no FK). alias is the issue
+// table alias in the surrounding query (e.g. "i").
+func appendStatusCatalogFilters(where []string, alias string, statusID pgtype.UUID, category string, addArg func(any) string) []string {
+	if statusID.Valid {
+		where = append(where, fmt.Sprintf("%s.status_id = %s", alias, addArg(statusID)))
+	}
+	if category != "" {
+		where = append(where, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM issue_status ist WHERE ist.id = %s.status_id AND ist.workspace_id = %s.workspace_id AND ist.category = %s)",
+			alias, alias, addArg(category)))
+	}
+	return where
 }
 
 func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueResponse {
@@ -748,6 +965,21 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		resp[i] = sir
 	}
 
+	// Attach status_detail (MUL-4809) to each search hit in one round-trip. The
+	// search scan doesn't select status_id, so resolve it by issue id here.
+	if len(resp) > 0 {
+		ids := make([]pgtype.UUID, 0, len(resp))
+		for i := range resp {
+			if u, err := util.ParseUUID(resp[i].ID); err == nil {
+				ids = append(ids, u)
+			}
+		}
+		details := h.statusDetailsByIssue(ctx, wsUUID, ids)
+		for i := range resp {
+			applyStatusDetail(&resp[i].IssueResponse, details)
+		}
+	}
+
 	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
@@ -853,6 +1085,13 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Custom-status catalog filters (MUL-4809). Parsed BEFORE the open_only
+	// branch so validation (400 on a bad UUID / unknown Category) and the two
+	// predicates apply to BOTH the open_only fast path and the general list.
+	statusIDFilter, statusCategoryFilter, statusFiltersOK := parseStatusCatalogFilters(w, r)
+	if !statusFiltersOK {
+		return
+	}
 
 	// open_only=true returns all non-done/cancelled issues (no limit).
 	if r.URL.Query().Get("open_only") == "true" {
@@ -869,6 +1108,8 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		issues, err := h.Queries.ListOpenIssues(ctx, db.ListOpenIssuesParams{
 			WorkspaceID:      wsUUID,
+			StatusID:         statusIDFilter,
+			StatusCategory:   pgtype.Text{String: statusCategoryFilter, Valid: statusCategoryFilter != ""},
 			Priority:         priorityFilter,
 			AssigneeID:       assigneeFilter,
 			AssigneeIds:      assigneeIdsFilter,
@@ -889,6 +1130,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			ids[i] = issue.ID
 		}
 		labelsMap := h.labelsByIssue(ctx, wsUUID, ids)
+		statusMap := h.statusDetailsByIssue(ctx, wsUUID, ids)
 		resp := make([]IssueResponse, len(issues))
 		for i, issue := range issues {
 			resp[i] = openIssueRowToResponse(issue, prefix)
@@ -897,6 +1139,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 				labels = []LabelResponse{}
 			}
 			resp[i].Labels = &labels
+			applyStatusDetail(&resp[i], statusMap)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -930,6 +1173,8 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if len(prioritiesFilter) == 0 {
 		prioritiesFilter = splitCommaParam(r.URL.Query().Get("priority"))
 	}
+	// statusIDFilter / statusCategoryFilter were parsed above (shared with the
+	// open_only branch); applied to the dynamic WHERE below.
 
 	// assignee_types narrows the list to issues assigned to the given actor
 	// kinds (member / agent / squad). Mirrors the same param on
@@ -1019,6 +1264,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if len(statusesFilter) > 0 {
 		where = append(where, fmt.Sprintf("i.status = ANY(%s::text[])", addArg(statusesFilter)))
 	}
+	where = appendStatusCatalogFilters(where, "i", statusIDFilter, statusCategoryFilter, addArg)
 	if len(prioritiesFilter) > 0 {
 		where = append(where, fmt.Sprintf("i.priority = ANY(%s::text[])", addArg(prioritiesFilter)))
 	}
@@ -1256,6 +1502,7 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 		ids[i] = issue.ID
 	}
 	labelsMap := h.labelsByIssue(ctx, wsUUID, ids)
+	statusMap := h.statusDetailsByIssue(ctx, wsUUID, ids)
 	resp := make([]IssueResponse, len(issues))
 	for i, issue := range issues {
 		resp[i] = issueListRowToResponse(issue, prefix)
@@ -1264,6 +1511,7 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			labels = []LabelResponse{}
 		}
 		resp[i].Labels = &labels
+		applyStatusDetail(&resp[i], statusMap)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1479,6 +1727,11 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 	if len(statuses) > 0 {
 		where = append(where, fmt.Sprintf("i.status = ANY(%s::text[])", addArg(statuses)))
 	}
+	statusIDFilter, statusCategoryFilter, statusFiltersOK := parseStatusCatalogFilters(w, r)
+	if !statusFiltersOK {
+		return
+	}
+	where = appendStatusCatalogFilters(where, "i", statusIDFilter, statusCategoryFilter, addArg)
 
 	priorities := splitCommaParam(r.URL.Query().Get("priorities"))
 	if len(priorities) == 0 {
@@ -1830,6 +2083,7 @@ ORDER BY
 		ids[i] = row.ID
 	}
 	labelsMap := h.labelsByIssue(ctx, wsUUID, ids)
+	statusMap := h.statusDetailsByIssue(ctx, wsUUID, ids)
 	prefix := h.getIssuePrefix(ctx, wsUUID)
 
 	groups := []IssueAssigneeGroupResponse{}
@@ -1855,6 +2109,7 @@ ORDER BY
 			labels = []LabelResponse{}
 		}
 		issue.Labels = &labels
+		applyStatusDetail(&issue, statusMap)
 		groups[idx].Issues = append(groups[idx].Issues, issue)
 	}
 
@@ -1874,6 +2129,7 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		detailLabels = []LabelResponse{}
 	}
 	resp.Labels = &detailLabels
+	applyStatusDetail(&resp, h.statusDetailsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID}))
 
 	// Fetch issue reactions.
 	reactions, err := h.Queries.ListIssueReactions(r.Context(), issue.ID)
@@ -1915,6 +2171,7 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
 	}
+	h.hydrateStatusDetails(r.Context(), issue.WorkspaceID, resp)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
 	})
@@ -1984,6 +2241,7 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
 	}
+	h.hydrateStatusDetails(r.Context(), wsUUID, resp)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
 	})
@@ -2350,9 +2608,13 @@ func readRuntimeCLIVersion(metadata []byte) string {
 }
 
 type CreateIssueRequest struct {
-	Title         string   `json:"title"`
-	Description   *string  `json:"description"`
+	Title       string  `json:"title"`
+	Description *string `json:"description"`
+	// Status is the alias form (Category alias / legacy alias / exact display
+	// name); StatusID targets a catalog row directly and is the only way to
+	// create straight into a CUSTOM status (MUL-4809 §3.1).
 	Status        string   `json:"status"`
+	StatusID      *string  `json:"status_id"`
 	Priority      string   `json:"priority"`
 	AssigneeType  *string  `json:"assignee_type"`
 	AssigneeID    *string  `json:"assignee_id"`
@@ -2381,6 +2643,27 @@ func duplicateIssueMessage(issue IssueResponse) string {
 	return issueguard.DuplicateMessage(issue.Identifier, issue.Title, issue.Status)
 }
 
+// writeParentStateConflict translates the database-owned hierarchy invariant
+// into the stable public API contract. The database remains the single source
+// of truth for HTTP, workers, integrations, and imports; this helper only
+// shapes its safe, aggregate error for HTTP clients.
+func writeParentStateConflict(w http.ResponseWriter, err error) bool {
+	conflict, ok := issueguard.ParentStateConflictFrom(err)
+	if !ok {
+		return false
+	}
+	payload := map[string]any{
+		"code":            conflict.Code,
+		"error":           issueguard.ParentStateConflictMessage(conflict.Code),
+		"parent_issue_id": conflict.ParentIssueID,
+	}
+	if conflict.IncompleteDescendantCount != nil {
+		payload["incomplete_descendant_count"] = *conflict.IncompleteDescendantCount
+	}
+	writeJSON(w, http.StatusConflict, payload)
+	return true
+}
+
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	var req CreateIssueRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2405,17 +2688,29 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := req.Status
-	if status == "" {
-		status = "todo"
-	}
 	priority := req.Priority
 	if priority == "" {
 		priority = "none"
 	}
-	if !validateIssueEnum(w, "status", status, validIssueStatuses) {
+	// Resolve through the catalog so a create can target a custom status, and so
+	// status_id + the compat token come from one row (MUL-4809 §6.1). Degrades to
+	// legacy-token validation on an unseeded workspace.
+	//
+	// Only forward `status` when the client actually sent one: defaulting it to
+	// "todo" here and passing it alongside status_id would look like a caller
+	// asking for two different statuses and trip the conflict check.
+	var statusInput *string
+	if req.Status != "" {
+		statusInput = &req.Status
+	} else if req.StatusID == nil {
+		fallback := "todo"
+		statusInput = &fallback
+	}
+	resolvedStatus, statusToken, ok := h.resolveIssueStatusInput(w, r, wsUUID, statusInput, req.StatusID)
+	if !ok {
 		return
 	}
+	status := statusToken
 	if !validateIssueEnum(w, "priority", priority, validIssuePriorities) {
 		return
 	}
@@ -2574,6 +2869,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
+		StatusID:       resolvedStatus.ID,
 		WorkspaceID:    wsUUID,
 		Title:          req.Title,
 		Description:    ptrToText(req.Description),
@@ -2620,6 +2916,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if writeParentStateConflict(w, err) {
+		return
+	}
 	if errors.Is(err, service.ErrParentIssueNotFound) {
 		writeError(w, http.StatusBadRequest, "parent issue not found in this workspace")
 		return
@@ -2652,9 +2951,14 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 type UpdateIssueRequest struct {
-	Title         *string  `json:"title"`
-	Description   *string  `json:"description"`
+	Title       *string `json:"title"`
+	Description *string `json:"description"`
+	// Status is the human/alias form: a Category alias, a legacy alias, or a
+	// status's exact display name (MUL-4809 §3.1). StatusID targets a catalog
+	// row directly and is what the UI status picker sends. Either may be used;
+	// sending both is only accepted when they resolve to the SAME status.
 	Status        *string  `json:"status"`
+	StatusID      *string  `json:"status_id"`
 	Priority      *string  `json:"priority"`
 	AssigneeType  *string  `json:"assignee_type"`
 	AssigneeID    *string  `json:"assignee_id"`
@@ -2727,11 +3031,16 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Description != nil {
 		params.Description = pgtype.Text{String: *req.Description, Valid: true}
 	}
-	if req.Status != nil {
-		if !validateIssueEnum(w, "status", *req.Status, validIssueStatuses) {
+	if req.Status != nil || req.StatusID != nil {
+		resolved, legacyToken, ok := h.resolveIssueStatusInput(w, r, prevIssue.WorkspaceID, req.Status, req.StatusID)
+		if !ok {
 			return
 		}
-		params.Status = pgtype.Text{String: *req.Status, Valid: true}
+		// Double-write: the authoritative status_id plus the compat legacy token
+		// derived from that SAME row, so the two can never disagree (§6.1). On an
+		// unseeded workspace resolved is zero and only the legacy token is written.
+		params.StatusID = resolved.ID
+		params.Status = pgtype.Text{String: legacyToken, Valid: true}
 	}
 	if req.Priority != nil {
 		if !validateIssueEnum(w, "priority", *req.Priority, validIssuePriorities) {
@@ -2866,6 +3175,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	issue, err := h.Queries.UpdateIssue(r.Context(), params)
 	if err != nil {
+		if writeParentStateConflict(w, err) {
+			return
+		}
 		slog.Warn("update issue failed", append(logger.RequestAttrs(r), "error", err, "issue_id", id, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to update issue: "+err.Error())
 		return
@@ -2877,11 +3189,22 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
+	// Return the resolved catalog view with the mutation, so a client that just
+	// moved the issue to a custom status renders its name/icon/color immediately
+	// instead of falling back to the legacy token (MUL-4809). hydrateStatusDetails
+	// writes through the slice, so read the element back.
+	hydrated := []IssueResponse{resp}
+	h.hydrateStatusDetails(r.Context(), issue.WorkspaceID, hydrated)
+	resp = hydrated[0]
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
 
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil) &&
 		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
-	statusChanged := req.Status != nil && prevIssue.Status != issue.Status
+	// status_id is the authoritative status, so compare it too: moving between two
+	// custom statuses in the SAME Category leaves the legacy token untouched, and
+	// keying only off that token would silently skip the status-change side effects.
+	statusChanged := (req.Status != nil || req.StatusID != nil) &&
+		(prevIssue.Status != issue.Status || uuidToString(prevIssue.StatusID) != uuidToString(issue.StatusID))
 	priorityChanged := req.Priority != nil && prevIssue.Priority != issue.Priority
 	// project_changed gates the client's per-project issue-list refetch the way
 	// status/assignee flags gate theirs. Without it the client must diff
@@ -2958,6 +3281,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// fails best-effort.
 	if statusChanged {
 		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
+		h.notifyParentOfChildAttention(r.Context(), prevIssue, issue, actorType, actorID)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -3149,10 +3473,9 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 	// Collect all attachment URLs (issue-level + comment-level) before CASCADE delete.
 	attachmentURLs, _ := h.Queries.ListAttachmentURLsByIssueOrComments(r.Context(), issue.ID)
 
-	err := h.Queries.DeleteIssue(r.Context(), db.DeleteIssueParams{
-		ID:          issue.ID,
-		WorkspaceID: issue.WorkspaceID,
-	})
+	// Delete the issue together with its relation edges in one transaction —
+	// issue_relation has no FK cascade (see deleteIssueWithRelations).
+	relationCounterparts, err := h.deleteIssueWithRelations(r.Context(), issue.ID, issue.WorkspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete issue")
 		return
@@ -3166,6 +3489,13 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 	// other clients after an identifier-path delete.
 	resolvedID := uuidToString(issue.ID)
 	h.publish(protocol.EventIssueDeleted, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{"issue_id": resolvedID})
+	// Relations touching this issue were removed with it; tell the surviving
+	// counterparts so their relation caches refresh (no FK, so no cascade event).
+	if len(relationCounterparts) > 0 {
+		h.publish(protocol.EventIssueRelationsChanged, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{
+			"issue_ids": relationCounterparts,
+		})
+	}
 	slog.Info("issue deleted", append(logger.RequestAttrs(r), "issue_id", resolvedID, "workspace_id", uuidToString(issue.WorkspaceID))...)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -3177,6 +3507,91 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 type BatchUpdateIssuesRequest struct {
 	IssueIDs []string           `json:"issue_ids"`
 	Updates  UpdateIssueRequest `json:"updates"`
+}
+
+type batchUpdatedIssue struct {
+	issue     db.Issue
+	prevIssue db.Issue
+}
+
+// orderBatchIssueIDsForStatus makes a uniform status update independent of
+// request order for issues that belong to the same selected tree. Terminal
+// transitions must visit descendants first; active transitions must visit
+// ancestors first. The database trigger remains the authority for concurrent
+// hierarchy changes, so an unavailable or out-of-selection ancestor simply
+// keeps its stable request order here.
+func (h *Handler) orderBatchIssueIDsForStatus(ctx context.Context, workspaceID pgtype.UUID, issueIDs []string, terminal bool) []string {
+	type orderedIssue struct {
+		issueID     string
+		canonicalID string
+		depth       int
+		known       bool
+	}
+
+	ordered := make([]orderedIssue, len(issueIDs))
+	issuesByID := make(map[string]db.Issue, len(issueIDs))
+	for index, issueID := range issueIDs {
+		ordered[index].issueID = issueID
+		issueUUID, err := util.ParseUUID(issueID)
+		if err != nil {
+			continue
+		}
+		issue, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID:          issueUUID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			continue
+		}
+		ordered[index].canonicalID = uuidToString(issue.ID)
+		issuesByID[ordered[index].canonicalID] = issue
+		ordered[index].known = true
+	}
+
+	var depthFor func(string, map[string]bool) int
+	depthFor = func(issueID string, path map[string]bool) int {
+		issue, ok := issuesByID[issueID]
+		if !ok || !issue.ParentIssueID.Valid {
+			return 0
+		}
+		parentID := uuidToString(issue.ParentIssueID)
+		if path[parentID] {
+			return 0
+		}
+		if _, ok := issuesByID[parentID]; !ok {
+			return 0
+		}
+		path[parentID] = true
+		defer delete(path, parentID)
+		return 1 + depthFor(parentID, path)
+	}
+	for index := range ordered {
+		if ordered[index].known {
+			ordered[index].depth = depthFor(ordered[index].canonicalID, map[string]bool{ordered[index].canonicalID: true})
+		}
+	}
+
+	sort.SliceStable(ordered, func(left, right int) bool {
+		if ordered[left].known != ordered[right].known {
+			// Unknown or stale selections are skipped by the existing batch
+			// contract. Keep them after known rows so they cannot break the
+			// strict tree ordering of a valid parent/child selection.
+			return ordered[left].known
+		}
+		if !ordered[left].known {
+			return false
+		}
+		if terminal {
+			return ordered[left].depth > ordered[right].depth
+		}
+		return ordered[left].depth < ordered[right].depth
+	})
+
+	result := make([]string, len(ordered))
+	for index, issue := range ordered {
+		result[index] = issue.issueID
+	}
+	return result
 }
 
 func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
@@ -3251,17 +3666,36 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	orderedIssueIDs := req.IssueIDs
+	if req.Updates.Status != nil {
+		orderedIssueIDs = h.orderBatchIssueIDsForStatus(r.Context(), wsUUID, req.IssueIDs, isTerminalChildStatus(*req.Updates.Status))
+	}
+
+	// A parent-state conflict must reject the whole batch. Keep every row write
+	// in one transaction and defer event/automation side effects until after the
+	// commit, so a 409 cannot leave earlier batch entries visible.
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start batch transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
 	updated := 0
+	updatedIssues := make([]batchUpdatedIssue, 0, len(orderedIssueIDs))
 	// Children that transitioned into a terminal status this batch, collected so
 	// the parent/stage notification is evaluated once against the final state
 	// after the loop (MUL-4155) rather than per-child mid-batch.
 	var childDoneCompleted []db.Issue
-	for _, issueID := range req.IssueIDs {
+	var childAttentionNeeded []db.Issue
+	batchActorType, batchActorID := h.resolveActor(r, userID, workspaceID)
+	for _, issueID := range orderedIssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
 			continue
 		}
-		prevIssue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+		prevIssue, err := qtx.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
 			ID:          issueUUID,
 			WorkspaceID: wsUUID,
 		})
@@ -3347,7 +3781,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				// Validate parent exists in the same workspace.
-				if _, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+				if _, err := qtx.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
 					ID:          newParentID,
 					WorkspaceID: prevIssue.WorkspaceID,
 				}); err != nil {
@@ -3357,7 +3791,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				cycleDetected := false
 				cursor := newParentID
 				for depth := 0; depth < 10; depth++ {
-					ancestor, err := h.Queries.GetIssue(r.Context(), cursor)
+					ancestor, err := qtx.GetIssue(r.Context(), cursor)
 					if err != nil || !ancestor.ParentIssueID.Valid {
 						break
 					}
@@ -3407,23 +3841,36 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		issue, err := h.Queries.UpdateIssue(r.Context(), params)
+		issue, err := qtx.UpdateIssue(r.Context(), params)
 		if err != nil {
+			if writeParentStateConflict(w, err) {
+				return
+			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
-			continue
+			writeError(w, http.StatusInternalServerError, "failed to update issue in batch")
+			return
 		}
 
+		updatedIssues = append(updatedIssues, batchUpdatedIssue{issue: issue, prevIssue: prevIssue})
+		updated++
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit batch update")
+		return
+	}
+
+	for _, updatedIssue := range updatedIssues {
+		issue := updatedIssue.issue
+		prevIssue := updatedIssue.prevIssue
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 		resp := issueToResponse(issue, prefix)
-		actorType, actorID := h.resolveActor(r, userID, workspaceID)
-
 		assigneeChanged := (req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil) &&
 			(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 		statusChanged := req.Updates.Status != nil && prevIssue.Status != issue.Status
 		priorityChanged := req.Updates.Priority != nil && prevIssue.Priority != issue.Priority
 		projectChanged := req.Updates.ProjectID != nil && uuidToString(prevIssue.ProjectID) != uuidToString(issue.ProjectID)
 
-		h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, map[string]any{
+		h.publish(protocol.EventIssueUpdated, workspaceID, batchActorType, batchActorID, map[string]any{
 			"issue":            resp,
 			"assignee_changed": assigneeChanged,
 			"status_changed":   statusChanged,
@@ -3431,12 +3878,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"project_changed":  projectChanged,
 		})
 
-		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
-		// mirrors UpdateIssue. See that handler for the rationale.
-		//
-		// Same single predicate as UpdateIssue — batch must not grow its own
-		// copy of the enqueue rule (the historical source of four-entry-point
-		// drift, MUL-3375). suppress_run applies batch-wide.
 		if trigger, ok := h.IssueService.WillEnqueueRun(r.Context(),
 			service.IssueTriggerInput{
 				Issue:           issue,
@@ -3444,28 +3885,18 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				AssigneeChanged: assigneeChanged,
 				StatusChanged:   statusChanged,
 			},
-			h.issueTriggerWriteProbe(r, actorType, issue),
+			h.issueTriggerWriteProbe(r, batchActorType, issue),
 		); ok && !req.Updates.SuppressRun {
-			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
+			h.dispatchIssueRun(r.Context(), issue, trigger, batchActorType, batchActorID, req.Updates.HandoffNote)
 		}
 
-		// No status change — not even → cancelled — cancels active tasks here,
-		// mirroring UpdateIssue (MUL-4465). See that handler for the rationale.
-
-		// Platform-driven parent notification, mirrored from UpdateIssue
-		// (MUL-2538) but DEFERRED to after the loop. Evaluating the stage
-		// barrier here, per-child, would read a mid-batch sibling snapshot and
-		// fire a stale "advance Stage N+1" wake when one batch closes several
-		// stages at once (MUL-4155). Collect the terminal transitions and let
-		// notifyParentsOfBatchChildDone below evaluate each parent once against
-		// the batch's final committed state. Same transition guard as
-		// notifyParentOfChildDone: a non-terminal -> terminal move on a child.
 		if statusChanged && issue.ParentIssueID.Valid &&
 			!isTerminalChildStatus(prevIssue.Status) && isTerminalChildStatus(issue.Status) {
 			childDoneCompleted = append(childDoneCompleted, issue)
 		}
-
-		updated++
+		if statusChanged && issue.ParentIssueID.Valid && childNeedsParentAttention(prevIssue.Status, issue.Status) {
+			childAttentionNeeded = append(childAttentionNeeded, issue)
+		}
 	}
 
 	// Aggregate parent/stage notification over the whole batch's final state so
@@ -3473,6 +3904,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// of issue_ids order (MUL-4155). Best-effort; failure does not abort the
 	// batch. Single-issue UpdateIssue is unchanged and still notifies inline.
 	h.notifyParentsOfBatchChildDone(r.Context(), childDoneCompleted)
+	h.notifyParentsOfBatchChildAttention(r.Context(), childAttentionNeeded, batchActorType, batchActorID)
 
 	slog.Info("batch update issues", append(logger.RequestAttrs(r), "count", updated)...)
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
@@ -3524,10 +3956,12 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		// Collect attachment URLs before CASCADE delete to clean up S3 objects.
 		attachmentURLs, _ := h.Queries.ListAttachmentURLsByIssueOrComments(r.Context(), issue.ID)
 
-		if err := h.Queries.DeleteIssue(r.Context(), db.DeleteIssueParams{
-			ID:          issue.ID,
-			WorkspaceID: issue.WorkspaceID,
-		}); err != nil {
+		// Per-issue transaction (relation cleanup + delete). The batch stays
+		// non-atomic across issues by design — a single failure skips that
+		// issue and the handler reports the count — but each issue's edges are
+		// removed atomically with it.
+		relationCounterparts, err := h.deleteIssueWithRelations(r.Context(), issue.ID, issue.WorkspaceID)
+		if err != nil {
 			slog.Warn("batch delete issue failed", "issue_id", issueID, "error", err)
 			continue
 		}
@@ -3537,6 +3971,11 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		// Always emit the resolved UUID — frontend caches key by UUID.
 		actorType, actorID := h.resolveActor(r, userID, workspaceID)
 		h.publish(protocol.EventIssueDeleted, workspaceID, actorType, actorID, map[string]any{"issue_id": uuidToString(issue.ID)})
+		if len(relationCounterparts) > 0 {
+			h.publish(protocol.EventIssueRelationsChanged, workspaceID, actorType, actorID, map[string]any{
+				"issue_ids": relationCounterparts,
+			})
+		}
 		deleted++
 	}
 

@@ -59,6 +59,13 @@ const (
 	taskSlotCapacityBackoff  = 5 * time.Second
 	repoCheckoutModeEnv      = "MULTICA_REPO_CHECKOUT_MODE"
 	repoCheckoutModeIsolated = "isolated"
+	// Fixed repo mode env vars injected into the agent process. The CLI keys
+	// on fixedRepoModeEnv to refuse `multica repo checkout`; the path and vcs
+	// type are informational context. These are daemon-authoritative — custom
+	// env must never override them (see layerCustomEnvAndHermesHome blocklist).
+	fixedRepoModeEnv    = "MULTICA_FIXED_REPO_MODE"
+	fixedRepoPathEnv    = "MULTICA_FIXED_REPO_PATH"
+	fixedRepoVcsTypeEnv = "MULTICA_FIXED_REPO_VCS_TYPE"
 	// defaultTaskPrepareTimeout is a hard liveness bound for everything after
 	// claim and before StartTask succeeds: runtime resolution, skill bundles,
 	// execution-environment setup, and the StartTask request itself. It is
@@ -215,6 +222,14 @@ type repoCacheBackend interface {
 	CreateWorktree(params repocache.WorktreeParams) (*repocache.WorktreeResult, error)
 }
 
+type claimBarrierOwner uint8
+
+const (
+	claimBarrierNone claimBarrierOwner = iota
+	claimBarrierDrain
+	claimBarrierUpdate
+)
+
 // Daemon is the local agent runtime that polls for and executes tasks.
 type Daemon struct {
 	cfg        Config
@@ -299,30 +314,31 @@ type Daemon struct {
 	cancelFunc    context.CancelFunc // set by Run(); called by triggerRestart
 	rootCtx       context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
 	restartBinary string             // non-empty after a successful update; path to the new binary
-	updating      atomic.Bool        // prevents concurrent update attempts
 	activeTasks   atomic.Int64       // number of tasks currently in handleTask; exposed via /health
 	ready         atomic.Bool        // false until preflight completes; gates /health status (starting -> running)
 
-	// claimMu guards pauseClaims and claimsInFlight. It is held only for the
-	// microseconds it takes to make a decision; ClaimTask itself runs without
-	// the lock so a slow per-runtime claim cannot stall auto-update or any
-	// other poller.
+	// claimMu guards claimBarrierOwner and claimsInFlight. It is held only for
+	// the microseconds it takes to make a decision; ClaimTask itself runs
+	// without the lock so a slow per-runtime claim cannot stall lifecycle work.
 	//
-	// The pair is the auto-update path's barrier against the issue's
-	// requirement that "升级过程中如果有 task 进来，会延后升级而不是中断 task":
-	// runRuntimePoller refuses to call ClaimTask while pauseClaims is set, and
-	// tryAutoUpdate refuses to flip pauseClaims while any poller is mid-claim
-	// or any task is in handleTask. Together that closes the fetch-then-claim
-	// race where a new task slipping in during the release-metadata fetch
-	// would be cancelled by triggerRestart's root-ctx cancel.
-	claimMu        sync.Mutex
-	pauseClaims    bool // when true, the batch poller skips claiming
-	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
+	// One explicit owner coordinates manual drain, periodic auto-update, and
+	// heartbeat-triggered update. Any non-none owner pauses new claims, and
+	// owner-checked release prevents one operation from clearing another's
+	// barrier.
+	claimMu           sync.Mutex
+	claimBarrierOwner claimBarrierOwner
+	claimsInFlight    int // pollers that have decided to claim but haven't yet handed the task off to handleTask
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
 	activeEnvRoots     map[string]int  // env root path -> reference count (handles reuse paths marked twice)
 	deletingEnvRoots   map[string]bool // env roots reserved by GC; new tasks wait until the mutation finishes
+
+	// fixedRepoTasks tracks task IDs currently executing in fixed repo mode so
+	// the /repo/checkout endpoint can reject a checkout request even if a
+	// hand-crafted request bypasses the CLI's MULTICA_FIXED_REPO_MODE guard.
+	// Registered in runTask, cleared when the task finishes.
+	fixedRepoTasks sync.Map // taskID (string) -> struct{}
 
 	activeCodexStoresMu   sync.Mutex
 	activeCodexStoresCond *sync.Cond      // signalled when an in-flight store deletion finishes, so a blocked markActive can proceed
@@ -2370,6 +2386,25 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	}
 }
 
+// modelDiscoveryExecutable resolves the binary to probe for a runtime's model
+// catalog. A custom runtime profile (e.g. a `pi` fork registered with a
+// different command_name) must be discovered through its own resolved command —
+// the same one task execution launches — not the family-default
+// Agents[provider] entry, which may expose a different catalog or not be
+// installed on this host at all (#4482). Built-in runtimes, and custom profiles
+// whose command was never resolved on this host, fall back to the family-default
+// agent path. Returns ok=false when neither resolves, so handleModelList can
+// report the existing "no agent configured" failure.
+func (d *Daemon) modelDiscoveryExecutable(rt Runtime) (string, bool) {
+	if spec, ok := d.customProfileLaunchForRuntime(rt.ID); ok {
+		return spec.path, true
+	}
+	if entry, ok := d.cfg.Agents[rt.Provider]; ok {
+		return entry.Path, true
+	}
+	return "", false
+}
+
 // handleModelList resolves the provider's supported models (via static
 // catalog or by shelling out to the agent CLI) and reports the result
 // back to the server. Model discovery failures are reported as empty
@@ -2386,10 +2421,16 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		})
 		return
 	}
-	// Self-heal a pinned executable path an in-place upgrade deleted (MUL-4486).
-	entry, _ = d.resolveAgentEntry(ctx, rt.Provider, entry)
+	executablePath := entry.Path
+	if spec, ok := d.customProfileLaunchForRuntime(rt.ID); ok {
+		executablePath = spec.path
+	} else {
+		// Self-heal a pinned executable path an in-place upgrade deleted (MUL-4486).
+		entry, _ = d.resolveAgentEntry(ctx, rt.Provider, entry)
+		executablePath = entry.Path
+	}
 
-	models, err := agent.ListModels(ctx, rt.Provider, entry.Path)
+	models, err := agent.ListModels(ctx, rt.Provider, executablePath)
 	if err != nil {
 		d.reportModelListResult(ctx, rt, requestID, map[string]any{
 			"status": "failed",
@@ -2606,12 +2647,19 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 		return
 	}
 
-	// Prevent concurrent update attempts.
-	if !d.updating.CompareAndSwap(false, true) {
-		d.logger.Warn("update already in progress, ignoring", "runtime_id", runtimeID, "update_id", update.ID)
+	// Claim the same lifecycle owner used by drain and periodic auto-update.
+	// A skipped heartbeat update remains pending server-side and will be
+	// offered again; barrier contention is not an update failure.
+	if !d.tryBeginUpdate(false) {
+		d.logger.Warn("update deferred: another lifecycle operation owns the claim barrier", "runtime_id", runtimeID, "update_id", update.ID)
 		return
 	}
-	defer d.updating.Store(false)
+	keepBarrier := false
+	defer func() {
+		if !keepBarrier {
+			d.releaseUpdate()
+		}
+	}()
 
 	d.logger.Info("CLI update requested", "runtime_id", runtimeID, "update_id", update.ID, "target_version", update.TargetVersion)
 
@@ -2638,13 +2686,14 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 
 	// Trigger daemon restart with the new binary.
 	d.triggerRestart()
+	keepBarrier = d.RestartBinary() != ""
 }
 
 // runUpdate executes the brew-or-download upgrade against targetVersion and
 // returns the human-readable output (always populated, even on failure when
 // brew gives us a useful diagnostic). The caller is responsible for the
-// `updating` CAS guard and for reporting status back to the server / triggering
-// the restart — extracted so the server-triggered path (handleUpdate) and the
+// lifecycle owner and for reporting status back to the server / triggering the
+// restart — extracted so the server-triggered path (handleUpdate) and the
 // auto-update poller (autoUpdateLoop) share the exact same execution body.
 func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 	if cli.IsBrewInstall() {
@@ -2720,14 +2769,14 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 }
 
 // tryEnterClaim records the intent to call ClaimTask. Returns true if the
-// caller may proceed, false if the auto-update barrier is in effect. Every
+// caller may proceed, false if a lifecycle barrier is in effect. Every
 // successful call MUST be paired with an exitClaim() on every exit path —
 // either right after a failed/empty claim, or via the handleTask goroutine's
 // defer once the task is handed off.
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	if d.pauseClaims {
+	if d.claimBarrierOwner != claimBarrierNone {
 		return false
 	}
 	d.claimsInFlight++
@@ -2741,31 +2790,77 @@ func (d *Daemon) exitClaim() {
 	d.claimsInFlight--
 }
 
-// trySetClaimBarrier atomically pauses new ClaimTask calls if the daemon is
-// fully idle (no claims in flight, no tasks running). Returns true if the
-// caller now holds the barrier and must release it with releaseClaimBarrier
-// on every non-restart exit path; false if the daemon is busy and the caller
-// should defer to the next tick. Used by tryAutoUpdate to close the race
-// where a task slips in between the cheap pre-fetch idle check and the
-// actual upgrade kick-off.
-func (d *Daemon) trySetClaimBarrier() bool {
-	d.claimMu.Lock()
-	defer d.claimMu.Unlock()
-	if d.claimsInFlight > 0 || d.activeTasks.Load() > 0 {
+// tryAcquireClaimBarrier atomically assigns the claim barrier to owner. When
+// requireIdle is true, it also rejects claims in flight and active tasks.
+func (d *Daemon) tryAcquireClaimBarrier(owner claimBarrierOwner, requireIdle bool) bool {
+	if owner == claimBarrierNone {
 		return false
 	}
-	d.pauseClaims = true
+	d.claimMu.Lock()
+	defer d.claimMu.Unlock()
+	if d.claimBarrierOwner != claimBarrierNone {
+		return false
+	}
+	if requireIdle && (d.claimsInFlight > 0 || d.activeTasks.Load() > 0) {
+		return false
+	}
+	d.claimBarrierOwner = owner
 	return true
 }
 
-// releaseClaimBarrier clears the auto-update claim barrier so pollers may
-// resume claiming. Called on failure paths only — a successful upgrade leaves
-// the barrier set because triggerRestart is about to take the process down
-// and clearing it would open a window for new claims during shutdown.
-func (d *Daemon) releaseClaimBarrier() {
+// releaseClaimBarrier clears the barrier only when the caller still owns it.
+// A mismatched release is a no-op so one lifecycle path cannot resume claims
+// underneath another.
+func (d *Daemon) releaseClaimBarrier(owner claimBarrierOwner) {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	d.pauseClaims = false
+	if d.claimBarrierOwner == owner {
+		d.claimBarrierOwner = claimBarrierNone
+	}
+}
+
+func (d *Daemon) claimBarrierOwnedBy(owner claimBarrierOwner) bool {
+	d.claimMu.Lock()
+	defer d.claimMu.Unlock()
+	return d.claimBarrierOwner == owner
+}
+
+// tryBeginDrain atomically pauses new claims for a client-owned drain
+// shutdown. Unlike the auto-update barrier, an active task or in-flight claim
+// is expected here: the drain waits for both to finish naturally. A false
+// return means another drain or auto-update already owns the claim pause.
+func (d *Daemon) tryBeginDrain() bool {
+	return d.tryAcquireClaimBarrier(claimBarrierDrain, false)
+}
+
+// drainIdle reports whether every claim that entered before the drain barrier
+// has completed its handoff and every resulting task has finished. The batch
+// poller increments activeTasks before exitClaim, so observing both values at
+// zero under claimMu cannot miss a task between the two counters.
+func (d *Daemon) drainIdle() bool {
+	d.claimMu.Lock()
+	defer d.claimMu.Unlock()
+	return d.claimBarrierOwner == claimBarrierDrain && d.claimsInFlight == 0 && d.activeTasks.Load() == 0
+}
+
+func (d *Daemon) releaseDrain() {
+	d.releaseClaimBarrier(claimBarrierDrain)
+}
+
+func (d *Daemon) isDraining() bool {
+	return d.claimBarrierOwnedBy(claimBarrierDrain)
+}
+
+func (d *Daemon) tryBeginUpdate(requireIdle bool) bool {
+	return d.tryAcquireClaimBarrier(claimBarrierUpdate, requireIdle)
+}
+
+func (d *Daemon) releaseUpdate() {
+	d.releaseClaimBarrier(claimBarrierUpdate)
+}
+
+func (d *Daemon) isUpdating() bool {
+	return d.claimBarrierOwnedBy(claimBarrierUpdate)
 }
 
 // triggerRestart initiates a graceful daemon restart after a successful CLI update.
@@ -3343,8 +3438,18 @@ func taskRunFailureReason(err error) string {
 //  4. The blocking wait is cancelled (daemon shutdown, server-side cancel)
 //     — fail the task with the ctx error.
 func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Task, taskLog *slog.Logger) (release func(), abort bool) {
-	if len(task.ProjectResources) == 0 || d.cfg.DaemonID == "" {
+	// Fixed repo tasks carry no project_resources but must go through the same
+	// validate → fail-fast → path-mutex flow: without this the invalid-path
+	// error would be swallowed in runTask and the task would wrongly fall back
+	// to a worktree checkout instead of failing with a clear message.
+	if (len(task.ProjectResources) == 0 && !task.FixedRepoMode) || d.cfg.DaemonID == "" {
 		return nil, false
+	}
+	// Distinguish fixed-repo failures in the surfaced reason so the UI/fail
+	// comment reads accurately (the two share the resolution/validation code).
+	failureReason := "local_directory_error"
+	if task.FixedRepoMode {
+		failureReason = "fixed_repo_error"
 	}
 	assignment, err := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
 	if err != nil {
@@ -3353,7 +3458,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			kind:          terminalTaskReportFail,
 			taskID:        task.ID,
 			errorMessage:  err.Error(),
-			failureReason: "local_directory_error",
+			failureReason: failureReason,
 		}); failErr != nil {
 			taskLog.Error("fail task after local_directory resolve error", "error", failErr)
 		}
@@ -3369,7 +3474,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			kind:          terminalTaskReportFail,
 			taskID:        task.ID,
 			errorMessage:  err.Error(),
-			failureReason: "local_directory_error",
+			failureReason: failureReason,
 		}); failErr != nil {
 			taskLog.Error("fail task after local_directory validation error", "error", failErr)
 		}
@@ -3617,6 +3722,7 @@ func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 var runtimeDisplayNameOverrides = map[string]string{
 	"traecli": "Trae",
 	"grok":    "Grok",
+	"qwen":    "Qwen Code",
 }
 
 // providerDisplayName returns the human-facing runtime name for a provider key.
@@ -4075,6 +4181,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentName:                        agentName,
 		AgentInstructions:                instructions,
 		AgentSkills:                      convertSkillsForEnv(skills),
+		DisabledRuntimeSkills:            convertDisabledRuntimeSkillsForEnv(task.Agent, task.RuntimeID, provider),
 		Repos:                            convertReposForEnv(task.Repos),
 		ProjectID:                        task.ProjectID,
 		ProjectTitle:                     task.ProjectTitle,
@@ -4099,6 +4206,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		InitiatorEmail:                   task.InitiatorEmail,
 		WorkspaceContext:                 task.WorkspaceContext,
 		ConnectedApps:                    task.ConnectedApps,
+		FixedRepoMode:                    task.FixedRepoMode,
+		FixedRepoPath:                    task.FixedRepoPath,
+		FixedRepoVcsType:                 task.FixedRepoVcsType,
 	}
 
 	// Mark candidate env roots as active before any env work so the GC loop
@@ -4136,6 +4246,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// LocalWorkDir into execenv. handleTask already validated + locked the
 	// path for worker tasks; leader tasks intentionally skip the assignment.
 	localAssignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
+	// Register fixed repo tasks so /repo/checkout can reject a bypass request
+	// for the duration of the run (the CLI env-var guard is the primary gate).
+	if localAssignment != nil && localAssignment.FixedRepo {
+		d.fixedRepoTasks.Store(task.ID, struct{}{})
+		defer d.fixedRepoTasks.Delete(task.ID)
+	}
 	// Reuse intentionally skipped for local_directory tasks: the prior
 	// WorkDir is the user's own path (always present) but the reuse path
 	// loses the envRoot association the GC loop needs, and re-running
@@ -4176,6 +4292,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.Agent != nil {
 		agentEnvOverrides = task.Agent.CustomEnv
 		agentCustomArgs = task.Agent.CustomArgs
+	}
+	// Effective Codex CLI args the task will launch with, normalized through the
+	// same agent.NormalizeCodexLaunchArgs pipeline buildCodexArgs uses (shell
+	// unquoting + blocked-flag filtering), preserving its ExtraArgs
+	// (profile-fixed + daemon defaults) vs CustomArgs (per-agent custom_args)
+	// split so the filtering matches launch exactly. Threaded into execenv so
+	// the Windows sandbox decision can honor a `-c windows.sandbox=...` override
+	// that never lands in config.toml — even when it arrives shell-quoted —
+	// instead of silently downgrading a user's isolation opt-in (MUL-4957).
+	var codexSandboxArgs []string
+	if provider == "codex" {
+		extraArgs := append(append([]string{}, profileFixedArgs...), defaultArgsForProvider(d.cfg, provider)...)
+		codexSandboxArgs = agent.NormalizeCodexLaunchArgs(extraArgs, agentCustomArgs, effectiveMcpConfig, d.logger)
 	}
 	// Hermes: resolve the overlay source home through one resolver contract —
 	// the selection parsed from custom_args (agent.ParseHermesProfileArgs) plus
@@ -4231,6 +4360,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			HermesSourceHome:      hermesSourceHome,
 			HermesSourceMustExist: hermesSourceMustExist,
 			HermesEnv:             hermesEnv,
+			CodexCustomArgs:       codexSandboxArgs,
 			Task:                  taskCtx,
 		})
 		if err != nil {
@@ -4254,6 +4384,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			HermesSourceHome:      hermesSourceHome,
 			HermesSourceMustExist: hermesSourceMustExist,
 			HermesEnv:             hermesEnv,
+			CodexCustomArgs:       codexSandboxArgs,
 			Task:                  taskCtx,
 		}
 		if localAssignment != nil {
@@ -4348,6 +4479,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 
 	prompt := BuildPrompt(task, provider)
 
+	// Resolve the model now (same two-tier rule used for ExecOptions below) so
+	// it can be surfaced to the spawned agent via MULTICA_MODEL. Resolving in
+	// one place keeps the env-var and the CLI flag in sync.
+	resolvedModel := resolveTaskModel(task, entry.Model)
+
 	// Pass task-scoped auth credentials and context so the spawned agent CLI
 	// can call the Multica API and the local daemon (e.g. `multica repo checkout`).
 	// MULTICA_TASK_SLOT is allocated from the daemon-wide concurrency pool, not
@@ -4373,9 +4509,24 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"TMPDIR":               taskTempDir,
 		"TMP":                  taskTempDir,
 		"TEMP":                 taskTempDir,
+		// Runtime self-introspection: expose the resolved provider, model, and
+		// trigger origin so skills and run-traces can read them directly.
+		"MULTICA_RUNTIME":        provider,
+		"MULTICA_TRIGGER_SOURCE": triggerSource(task),
+	}
+	if resolvedModel != "" {
+		agentEnv["MULTICA_MODEL"] = resolvedModel
 	}
 	if checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS); checkoutMode != "" {
 		agentEnv[repoCheckoutModeEnv] = checkoutMode
+	}
+	// Fixed repo mode: signal the CLI to reject `multica repo checkout` (the
+	// agent must not clone/checkout over the user's directory) and surface the
+	// locked path + declared VCS type as context.
+	if localAssignment != nil && localAssignment.FixedRepo {
+		agentEnv[fixedRepoModeEnv] = "true"
+		agentEnv[fixedRepoPathEnv] = localAssignment.AbsPath
+		agentEnv[fixedRepoVcsTypeEnv] = localAssignment.VcsType
 	}
 	if task.AutopilotRunID != "" {
 		agentEnv["MULTICA_AUTOPILOT_RUN_ID"] = task.AutopilotRunID
@@ -4508,14 +4659,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// default, codex app-server's account-scoped default, etc.).
 	// Baking a Go-side "recommended default" here is how the
 	// cursor regression happened — static guesses drift from
-	// whatever the upstream CLI actually accepts.
-	model := ""
-	if task.Agent != nil && task.Agent.Model != "" {
-		model = task.Agent.Model
-	}
-	if model == "" {
-		model = entry.Model
-	}
+	// whatever the upstream CLI actually accepts. Resolved earlier
+	// in this function (resolvedModel) and reused here so the
+	// MULTICA_MODEL env var and the --model flag never diverge.
+	model := resolvedModel
 	thinkingLevel := ""
 	if task.Agent != nil {
 		thinkingLevel = task.Agent.ThinkingLevel
@@ -4567,12 +4714,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// survived to here, the backend must disclose to the user when the live
 		// resume still fails — even across the fresh-session retry below, which
 		// clears ResumeSessionID but not this (MUL-4424).
-		ResumeExpected: task.PriorSessionID != "",
-		ExtraArgs:      extraArgs,
-		CustomArgs:     customArgs,
-		McpConfig:      mcpConfig,
-		ThinkingLevel:  thinkingLevel,
-		OpenclawMode:   openclawMode,
+		ResumeExpected:     task.PriorSessionID != "",
+		ExtraArgs:          extraArgs,
+		CustomArgs:         customArgs,
+		McpConfig:          mcpConfig,
+		ThinkingLevel:      thinkingLevel,
+		OpenclawMode:       openclawMode,
+		ClaudeSettingsPath: env.ClaudeSettingsPath,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
@@ -4739,15 +4887,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			FailureReason: failureReason,
 			Usage:         usageEntries,
 		}, nil
-	case "idle_watchdog":
-		// The idle watchdog force-stopped the run because the backend
-		// went silent (e.g. claude blocked on a tool call against a
-		// frozen child process). Route through the blocked path with a
-		// dedicated failure_reason so the run leaves "running" state and
-		// operators can tell idle-stop apart from a real timeout.
+	case "idle_watchdog", "tool_watchdog":
+		// A watchdog force-stopped the run. Route through the blocked path
+		// with a dedicated failure_reason so the run leaves "running" state
+		// and operators can tell a watchdog stop apart from a real timeout.
+		//
+		// The two reasons are kept distinct because only idle_watchdog is in
+		// the server's auto-retry allowlist: a stalled model turn is safe to
+		// resume, while a tool that never returned may have already taken
+		// effect outside the process (MUL-5063).
+		toolInFlight := result.Status == "tool_watchdog"
 		comment := result.Error
 		if comment == "" {
-			comment = idleWatchdogReason(d.cfg.AgentIdleWatchdog)
+			window := d.cfg.AgentIdleWatchdog
+			if toolInFlight {
+				window = d.cfg.AgentToolWatchdog
+			}
+			comment = idleWatchdogReason(window, toolInFlight)
 		}
 		return TaskResult{
 			Status:        "blocked",
@@ -4755,7 +4911,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			SessionID:     result.SessionID,
 			WorkDir:       env.WorkDir,
 			EnvRoot:       env.RootDir,
-			FailureReason: "idle_watchdog",
+			FailureReason: result.Status,
 			Usage:         usageEntries,
 		}, nil
 	case "cancelled":
@@ -4872,10 +5028,12 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	// message — so while a tool is in flight the watchdog applies the larger
 	// AgentToolWatchdog budget instead of treating that silence as a hang.
 	var inFlightTools atomic.Int32
-	var idleWatchdogFired atomic.Bool
-	// idleWatchdogThreshold records (as nanos) which silence budget actually
-	// tripped the watchdog — the idle window or the larger in-flight-tool
-	// window — so the failure message reports the real duration.
+	// watchdog records whether the watchdog fired, which silence budget tripped
+	// it, and — critically — whether a tool was in flight at the time. The two
+	// modes get different dispositions downstream: a stalled model turn is safe
+	// to resume, a stuck tool call may have already taken effect outside the
+	// process (MUL-5063).
+	var watchdog watchdogOutcome
 	idleWindow := d.cfg.AgentIdleWatchdog
 	// A provider may opt into a shorter per-run no-message budget. The global
 	// zero remains authoritative so MULTICA_AGENT_IDLE_WATCHDOG=0 still disables
@@ -4883,10 +5041,9 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	if idleWindow > 0 && opts.IdleWatchdogTimeout > 0 && opts.IdleWatchdogTimeout < idleWindow {
 		idleWindow = opts.IdleWatchdogTimeout
 	}
-	var idleWatchdogThreshold atomic.Int64
-	idleWatchdogThreshold.Store(int64(idleWindow))
+	watchdog.threshold.Store(int64(idleWindow))
 	if idleWindow > 0 {
-		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, taskLog, taskID)
+		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &watchdog, agentCancel, session.Messages, taskLog, taskID)
 	}
 
 	// drainFinished closes after the drain goroutine has flushed the last
@@ -4953,34 +5110,69 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			}
 		}()
 
+		// sessionPinned flips only once the server has acknowledged the resume
+		// pointer; sessionPinInFlight keeps concurrent status messages from
+		// stacking duplicate pin requests.
 		var sessionPinned atomic.Bool
+		var sessionPinInFlight atomic.Bool
+		var sessionPinAttempts atomic.Int32
 		for {
 			select {
 			case msg, ok := <-session.Messages:
 				if !ok {
 					goto drainDone
 				}
-				// Stamp activity as soon as a message lands. The idle
-				// watchdog reads this to decide whether the backend has
-				// gone silent — stamping before processing makes sure a
-				// slow downstream call (mu.Lock contention, batch resize)
-				// can't be misattributed to backend silence.
-				lastActivityAt.Store(time.Now().UnixNano())
+				// Stamp activity as soon as a progress-bearing message
+				// lands. Stamping before processing makes sure a slow
+				// downstream call (mu.Lock contention, batch resize) can't
+				// be misattributed to backend silence.
+				//
+				// Only forward progress counts. Liveness-only messages are
+				// deliberately excluded: a backend blocked on a dead
+				// provider stream keeps emitting them on a fixed cadence
+				// (the claude CLI sustained ~35 content-free events/min
+				// through two multi-minute hangs), so counting them as
+				// activity refreshes the idle timer forever and leaves the
+				// watchdog structurally unable to ever fire (MUL-5042).
+				if isProgressMessage(msg.Type) {
+					lastActivityAt.Store(time.Now().UnixNano())
+				}
 				switch msg.Type {
 				case agent.MessageStatus:
 					// Persist the session/work_dir as soon as the backend
 					// reveals them. Without this, a daemon crash mid-run
 					// loses the resume pointer and the auto-retry fires
 					// without context.
-					if msg.SessionID != "" && !sessionPinned.Swap(true) {
+					//
+					// Only a CONFIRMED pin counts as pinned. Marking it done
+					// before the HTTP call returned meant one transient
+					// failure permanently lost the resume pointer — and the
+					// watchdog's synthetic result carries no SessionID of its
+					// own, so the retry child would silently restart from
+					// scratch instead of resuming. Status messages keep
+					// arriving, so retrying on the next one costs nothing;
+					// the attempt cap stops a hard failure from firing a
+					// request per status event for the life of the run
+					// (MUL-5063).
+					if msg.SessionID != "" && !sessionPinned.Load() &&
+						sessionPinAttempts.Load() < maxSessionPinAttempts &&
+						sessionPinInFlight.CompareAndSwap(false, true) {
 						sid := msg.SessionID
 						wd := opts.Cwd
+						attempt := sessionPinAttempts.Add(1)
 						go func() {
+							defer sessionPinInFlight.Store(false)
 							pinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer cancel()
 							if err := d.client.PinTaskSession(pinCtx, taskID, sid, wd); err != nil {
-								taskLog.Debug("pin session failed", "error", err)
+								taskLog.Debug("pin session failed, retrying on next status message",
+									"attempt", attempt,
+									"max_attempts", maxSessionPinAttempts,
+									"error", err,
+								)
+								return
 							}
+							sessionPinned.Store(true)
 						}()
 					}
 				case agent.MessageToolUse:
@@ -5099,15 +5291,16 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	select {
 	case result := <-session.Result:
 		waitForDrain()
-		if idleWatchdogFired.Load() {
+		if watchdog.fired.Load() {
 			// The backend's wait goroutine (e.g. claude.go) translates the
 			// SIGKILL we delivered via agentCancel into Status="aborted".
-			// Re-tag it as "idle_watchdog" so runTask routes the
-			// disposition through a dedicated failure_reason, not the
-			// generic "agent_error" bucket the aborted path falls into.
-			result.Status = "idle_watchdog"
+			// Re-tag it so runTask routes the disposition through a dedicated
+			// failure_reason, not the generic "agent_error" bucket the aborted
+			// path falls into.
+			toolInFlight := watchdog.toolInFlight.Load()
+			result.Status = watchdogStatus(toolInFlight)
 			if result.Error == "" {
-				result.Error = idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+				result.Error = idleWatchdogReason(time.Duration(watchdog.threshold.Load()), toolInFlight)
 			}
 		}
 		return result, toolCount.Load(), nil
@@ -5121,10 +5314,11 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		// context.Canceled. Check this BEFORE the generic cancelled/timeout
 		// classifiers so a watchdog-induced stop isn't misreported as
 		// "task cancelled by server".
-		if idleWatchdogFired.Load() {
+		if watchdog.fired.Load() {
+			toolInFlight := watchdog.toolInFlight.Load()
 			return agent.Result{
-				Status: "idle_watchdog",
-				Error:  idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load())),
+				Status: watchdogStatus(toolInFlight),
+				Error:  idleWatchdogReason(time.Duration(watchdog.threshold.Load()), toolInFlight),
 			}, toolCount.Load(), nil
 		}
 		// Distinguish external cancellation (e.g. server-initiated cancel
@@ -5145,11 +5339,82 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	}
 }
 
+// maxSessionPinAttempts bounds how many times one run will try to persist its
+// resume pointer. Status messages arrive continuously, so a failed pin retries
+// on the next one; the cap stops a permanently-failing endpoint from firing a
+// request per status event for the life of the run (MUL-5063).
+const maxSessionPinAttempts = 5
+
+// watchdogOutcome records how a run ended when the watchdog stopped it.
+// toolInFlight separates the two failure modes the watchdog detects, which
+// carry very different resume risk — see watchdogStatus.
+type watchdogOutcome struct {
+	fired        atomic.Bool
+	toolInFlight atomic.Bool
+	// threshold records (as nanos) which silence budget actually tripped the
+	// watchdog — the idle window or the larger in-flight-tool window — so the
+	// failure message reports the real duration.
+	threshold atomic.Int64
+}
+
+// watchdogStatus maps a watchdog stop onto the disposition runTask routes on.
+//
+// The distinction matters because only one of the two modes is safe to retry
+// automatically:
+//
+//   - idle_watchdog — no tool was in flight, so the model turn itself stalled.
+//     Nothing ran outside the process, and resuming the session on a fresh
+//     connection is exactly the recovery.
+//   - tool_watchdog — a tool call was in flight and never returned. It may have
+//     already taken effect outside the process (a deploy that shipped, an
+//     upload that landed, a payment that posted) with only the result lost.
+//     Resuming would re-run it, so this one stays out of the auto-retry
+//     allowlist and waits for a human (MUL-5063).
+func watchdogStatus(toolInFlight bool) string {
+	if toolInFlight {
+		return "tool_watchdog"
+	}
+	return "idle_watchdog"
+}
+
 // idleWatchdogReason formats the human-facing explanation surfaced on
-// idle_watchdog dispositions. Centralised so the result-arrival branch and the
+// watchdog dispositions. Centralised so the result-arrival branch and the
 // drain-timeout branch in executeAndDrain emit identical wording.
-func idleWatchdogReason(window time.Duration) string {
+func idleWatchdogReason(window time.Duration, toolInFlight bool) string {
+	if toolInFlight {
+		return fmt.Sprintf("a tool call produced no output for %s and message queue was empty; force-stopped by tool watchdog (not auto-retried: the tool may have already taken effect)", window)
+	}
 	return fmt.Sprintf("agent produced no new messages for %s and message queue was empty; force-stopped by idle watchdog", window)
+}
+
+// isProgressMessage reports whether a backend message represents forward
+// progress for idle-watchdog purposes.
+//
+// Only messages that carry work count: assistant content (text, thinking),
+// tool traffic, and errors. Liveness-only messages are excluded because a
+// backend that is alive but stuck still produces them:
+//
+//   - MessageStatus is a periodic ping. The claude backend emits one per
+//     `system` stream event, and two observed hangs sustained roughly 35
+//     content-free events/min for their entire duration — indistinguishable
+//     from a healthy run if it counts as activity.
+//   - MessageLog is diagnostic output, which says the process is running, not
+//     that the run is advancing.
+//
+// Counting either one refreshed lastActivityAt indefinitely, which is why the
+// watchdog never fired once across four days of production logs despite real
+// multi-minute hangs (MUL-5042).
+//
+// Narrowing this does not endanger legitimately slow work: a long silent tool
+// call is covered by the separate in-flight-tool budget (see runIdleWatchdog),
+// and session pinning reads MessageStatus independently of this predicate.
+func isProgressMessage(t agent.MessageType) bool {
+	switch t {
+	case agent.MessageText, agent.MessageThinking, agent.MessageToolUse, agent.MessageToolResult, agent.MessageError:
+		return true
+	default:
+		return false
+	}
 }
 
 // runIdleWatchdog ticks until either agentCtx is cancelled or the backend has
@@ -5174,7 +5439,7 @@ func idleWatchdogReason(window time.Duration) string {
 // Tick interval is window/2 (floored at 30 s in production, but the floor only
 // kicks in for windows >= 1 min so tests can pass tiny windows like 50 ms and
 // see the watchdog fire within a few ticks).
-func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, firedThreshold *atomic.Int64, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger, taskID string) {
+func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, outcome *watchdogOutcome, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger, taskID string) {
 	interval := window / 2
 	if window >= time.Minute && interval < 30*time.Second {
 		interval = 30 * time.Second
@@ -5218,8 +5483,9 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 				"threshold", threshold.String(),
 				"tool_in_flight", toolInFlight,
 			)
-			firedThreshold.Store(int64(threshold))
-			fired.Store(true)
+			outcome.threshold.Store(int64(threshold))
+			outcome.toolInFlight.Store(toolInFlight)
+			outcome.fired.Store(true)
 			cancel()
 			return
 		}
@@ -5451,6 +5717,25 @@ func convertSkillsForEnv(skills []SkillData) []execenv.SkillContextForEnv {
 	return result
 }
 
+func convertDisabledRuntimeSkillsForEnv(agentData *AgentData, runtimeID, provider string) []execenv.RuntimeSkillRefForEnv {
+	if agentData == nil || len(agentData.DisabledRuntimeSkills) == 0 {
+		return nil
+	}
+	result := make([]execenv.RuntimeSkillRefForEnv, 0, len(agentData.DisabledRuntimeSkills))
+	for _, skill := range agentData.DisabledRuntimeSkills {
+		if skill.RuntimeID != runtimeID || skill.Provider != provider {
+			continue
+		}
+		result = append(result, execenv.RuntimeSkillRefForEnv{
+			Root:   skill.Root,
+			Key:    skill.Key,
+			Name:   skill.Name,
+			Plugin: skill.Plugin,
+		})
+	}
+	return result
+}
+
 // composeOpenclawIncludeRoots returns the value the daemon should set for
 // OPENCLAW_INCLUDE_ROOTS on the child openclaw process so its `$include`
 // loader will follow the wrapper's reference out of envRoot into the
@@ -5627,6 +5912,45 @@ func configureCodexTaskShellEnvironment(provider, codexHome string, inherited []
 	return nil
 }
 
+// resolveTaskModel returns the model string the daemon should pass to both
+// the agent CLI (`--model`) and the spawned agent's environment
+// (MULTICA_MODEL). It mirrors the two-tier rule documented at the
+// ExecOptions call-site: an explicit agent.model wins over the daemon-wide
+// MULTICA_<PROVIDER>_MODEL default (which the caller has already resolved
+// into entry.Model). Empty means "let the CLI pick its own default" — the
+// caller MUST treat "" as "don't set the env var" rather than as the
+// literal string.
+func resolveTaskModel(task Task, entryModel string) string {
+	if task.Agent != nil && task.Agent.Model != "" {
+		return task.Agent.Model
+	}
+	return entryModel
+}
+
+// triggerSource derives the MULTICA_TRIGGER_SOURCE value from the task
+// payload. The agent uses this to short-circuit "why am I running?"
+// introspection (autopilot debugging, chat-vs-issue tracing, squad routing
+// audits) without having to grep its own context files.
+//
+// Discrimination order matches the daemon's own dispatch precedence:
+// autopilot > chat > quick_create > squad > manual. The default "manual"
+// covers comment- and assignment-triggered runs where no specialised
+// pathway tagged the task.
+func triggerSource(task Task) string {
+	switch {
+	case task.AutopilotRunID != "":
+		return "autopilot"
+	case task.ChatSessionID != "":
+		return "chat"
+	case task.QuickCreatePrompt != "":
+		return "quick_create"
+	case task.SquadID != "":
+		return "squad"
+	default:
+		return "manual"
+	}
+}
+
 func defaultArgsForProvider(cfg Config, provider string) []string {
 	var args []string
 	switch provider {
@@ -5636,6 +5960,8 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		args = cfg.CodexArgs
 	case "codebuddy":
 		args = cfg.CodebuddyArgs
+	case "qwen":
+		args = cfg.QwenArgs
 	default:
 		return nil
 	}

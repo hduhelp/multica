@@ -1,8 +1,20 @@
 export type { Issue, IssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction } from "./issue";
 export type {
+  StatusCategory,
+  StatusDetail,
+  StatusColor,
+  StatusIconKey,
+  IssueStatusDefinition,
+  IssueStatusCatalog,
+  CreateIssueStatusRequest,
+  UpdateIssueStatusRequest,
+} from "./issue";
+export { STATUS_COLORS, STATUS_ICONS } from "./issue";
+export type {
   Agent,
   AgentStatus,
   AgentRuntimeMode,
+  FixedRepoVcsType,
   AgentVisibility,
   AgentPermissionMode,
   AgentInvocationTarget,
@@ -15,6 +27,7 @@ export type {
   AgentRunCount,
   TaskFailureReason,
   AgentRuntime,
+  AgentRuntimeBinding,
   RuntimeDevice,
   RuntimeProfile,
   RuntimeProtocolFamily,
@@ -23,6 +36,7 @@ export type {
   UpdateRuntimeProfileRequest,
   CreateAgentRequest,
   AgentBuilderSession,
+  UpsertAgentRuntimeBindingRequest,
   AgentTemplate,
   AgentTemplateSummary,
   AgentTemplateSkillRef,
@@ -35,6 +49,8 @@ export type {
   Skill,
   SkillSummary,
   AgentSkillSummary,
+  DisabledRuntimeSkill,
+  SetAgentRuntimeSkillEnabledRequest,
   SkillFile,
   CreateSkillRequest,
   UpdateSkillRequest,

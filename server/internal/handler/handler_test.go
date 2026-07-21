@@ -17,9 +17,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -53,12 +55,25 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 
+	if err := ensureHandlerTestSchema(ctx, pool); err != nil {
+		fmt.Printf("Failed to reconcile handler test schema: %v\n", err)
+		pool.Close()
+		os.Exit(1)
+	}
+
 	queries := db.New(pool)
 	hub := realtime.NewHub()
 	go hub.Run()
 	bus := events.New()
 	emailSvc := service.NewEmailService()
 	testHandler = New(queries, pool, hub, bus, emailSvc, nil, nil, analytics.NoopClient{}, Config{AllowSignup: true})
+	// The autopilot handler tests assert task-driven finalization (bind + running),
+	// so enable the two-phase rollout gate for the suite (MUL-4809 §4.1 P0-3).
+	{
+		provider := featureflag.NewStaticProvider()
+		provider.Set(featureflags.AutopilotTaskDrivenRuns, featureflag.Rule{Default: true})
+		testHandler.AutopilotService.FeatureFlags = featureflag.NewService(provider)
+	}
 	// httptest.NewRequest defaults RemoteAddr to 192.0.2.1, so every webhook
 	// test in the suite shares one IP bucket. With the production default
 	// (30/min) the budget runs out partway through the suite and unrelated
@@ -87,6 +102,52 @@ func TestMain(m *testing.M) {
 	}
 	pool.Close()
 	os.Exit(code)
+}
+
+func ensureHandlerTestSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	if _, err := pool.Exec(ctx, `
+		ALTER TABLE agent ADD COLUMN IF NOT EXISTS queued_ttl_seconds DOUBLE PRECISION;
+
+		CREATE TABLE IF NOT EXISTS user_scm_integration (
+			id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id uuid NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+			platform text NOT NULL,
+			base_url text NOT NULL,
+			username text NOT NULL,
+			email text NOT NULL,
+			credential_ciphertext bytea,
+			credential_generated_by_service boolean NOT NULL DEFAULT false,
+			credential_last_updated_at timestamptz,
+			created_at timestamptz NOT NULL DEFAULT now(),
+			updated_at timestamptz NOT NULL DEFAULT now(),
+			UNIQUE (user_id, platform)
+		);
+
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1
+				FROM pg_constraint
+				WHERE conrelid = 'agent'::regclass
+				  AND conname = 'agent_queued_ttl_seconds_valid'
+			) THEN
+				ALTER TABLE agent
+					ADD CONSTRAINT agent_queued_ttl_seconds_valid
+					CHECK (
+						queued_ttl_seconds IS NULL
+						OR (
+							queued_ttl_seconds > 0
+							AND queued_ttl_seconds::text <> 'NaN'
+							AND queued_ttl_seconds NOT IN ('Infinity'::double precision, '-Infinity'::double precision)
+						)
+					);
+			END IF;
+		END $$;
+	`); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, string, error) {
@@ -246,6 +307,17 @@ func createHandlerTestAgent(t *testing.T, name string, mcpConfig []byte) string 
 	})
 
 	return agentID
+}
+
+func fetchAgentQueuedTTLSeconds(t *testing.T, agentID string) pgtype.Float8 {
+	t.Helper()
+
+	var queuedTTL pgtype.Float8
+	if err := testPool.QueryRow(context.Background(), `SELECT queued_ttl_seconds FROM agent WHERE id = $1`, agentID).Scan(&queuedTTL); err != nil {
+		t.Fatalf("failed to load agent queued_ttl_seconds: %v", err)
+	}
+
+	return queuedTTL
 }
 
 // createHandlerTestTaskForAgent seeds a running agent_task_queue row for the
@@ -1091,8 +1163,8 @@ func TestTriggerAutopilotAllowsActiveDuplicateIssue(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&run); err != nil {
 		t.Fatalf("decode autopilot run: %v", err)
 	}
-	if run.Status != "issue_created" {
-		t.Fatalf("run status = %q, want issue_created", run.Status)
+	if run.Status != "running" {
+		t.Fatalf("run status = %q, want running (task-bound, MUL-4809 §4.1)", run.Status)
 	}
 	if run.IssueID == nil {
 		t.Fatal("run issue_id is nil, want newly created issue")
@@ -1169,8 +1241,8 @@ func TestScheduledAutopilotAllowsActiveDuplicateIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DispatchAutopilot schedule duplicate: %v", err)
 	}
-	if run == nil || run.Status != "issue_created" {
-		t.Fatalf("dispatch result = %+v, want status issue_created", run)
+	if run == nil || run.Status != "running" {
+		t.Fatalf("dispatch result = %+v, want status running (task-bound, MUL-4809 §4.1)", run)
 	}
 	newIssueID := uuidToString(run.IssueID)
 	if newIssueID == "" {
@@ -1252,8 +1324,8 @@ func TestAutopilotCreatedIssueCreatorIsAssigneeAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DispatchAutopilot: %v", err)
 	}
-	if run == nil || run.Status != "issue_created" {
-		t.Fatalf("dispatch result = %+v, want status issue_created", run)
+	if run == nil || run.Status != "running" {
+		t.Fatalf("dispatch result = %+v, want status running (task-bound, MUL-4809 §4.1)", run)
 	}
 
 	var creatorType, creatorID string

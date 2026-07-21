@@ -30,7 +30,7 @@ func TestClaudeHandleAssistantText(t *testing.T) {
 		}),
 	}
 
-	output, tools := b.handleAssistant(msg, ch, make(map[string]TokenUsage))
+	output, tools, _ := b.handleAssistant(msg, ch, make(map[string]TokenUsage))
 
 	if output != "Hello world" {
 		t.Fatalf("expected output 'Hello world', got %q", output)
@@ -69,7 +69,7 @@ func TestClaudeHandleAssistantToolUse(t *testing.T) {
 		}),
 	}
 
-	output, tools := b.handleAssistant(msg, ch, make(map[string]TokenUsage))
+	output, tools, _ := b.handleAssistant(msg, ch, make(map[string]TokenUsage))
 
 	if output != "" {
 		t.Fatalf("tool_use should not add to output, got %q", output)
@@ -110,7 +110,7 @@ func TestClaudeHandleUserToolResult(t *testing.T) {
 		}),
 	}
 
-	if b.handleUser(msg, ch) {
+	if launched, _ := b.handleUser(msg, ch); launched {
 		t.Fatal("did not expect async launch in ordinary tool result")
 	}
 
@@ -235,7 +235,7 @@ func TestClaudeHandleUserDetectsAsyncLaunchedToolResult(t *testing.T) {
 		}),
 	}
 
-	if !b.handleUser(msg, ch) {
+	if launched, _ := b.handleUser(msg, ch); !launched {
 		t.Fatal("expected async launch to be detected")
 	}
 }
@@ -262,7 +262,7 @@ func TestClaudeHandleUserIgnoresAsyncLaunchedTextOutput(t *testing.T) {
 		}),
 	}
 
-	if b.handleUser(msg, ch) {
+	if launched, _ := b.handleUser(msg, ch); launched {
 		t.Fatal("did not expect async launch to be detected in ordinary text output")
 	}
 }
@@ -279,7 +279,7 @@ func TestClaudeHandleAssistantInvalidJSON(t *testing.T) {
 	}
 
 	// Should not panic
-	output, tools := b.handleAssistant(msg, ch, make(map[string]TokenUsage))
+	output, tools, _ := b.handleAssistant(msg, ch, make(map[string]TokenUsage))
 
 	if output != "" {
 		t.Fatalf("expected empty output for invalid JSON, got %q", output)
@@ -794,6 +794,15 @@ func TestWriteMcpConfigToTemp(t *testing.T) {
 	if !bytes.Equal(data, []byte(raw)) {
 		t.Fatalf("expected %s, got %s", raw, data)
 	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat temp file %s: %v", path, err)
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("temp MCP file permissions = %o, want no group/other access", info.Mode().Perm())
+		}
+	}
 
 	// Cleanup should remove the temp directory and every related sidecar file.
 	cleanupMcpConfigTemp(path)
@@ -1025,5 +1034,23 @@ func TestBuildClaudeArgsExtraArgsBeforeCustomArgsAndFiltersBoth(t *testing.T) {
 	}
 	if extraIdx == -1 || customIdx == -1 || extraIdx > customIdx {
 		t.Fatalf("expected extra args before custom args, got %v", args)
+	}
+}
+
+func TestBuildClaudeArgsManagedSkillSettingsWins(t *testing.T) {
+	args := buildClaudeArgs(ExecOptions{
+		ClaudeSettingsPath: "/tmp/multica-claude-settings.json",
+		ExtraArgs:          []string{"--settings", "/tmp/default.json"},
+		CustomArgs:         []string{"--settings=/tmp/agent.json", "--max-turns", "7"},
+	}, slog.Default())
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "default.json") || strings.Contains(joined, "agent.json") {
+		t.Fatalf("competing settings args were not filtered: %v", args)
+	}
+	if !strings.Contains(joined, "--settings /tmp/multica-claude-settings.json") {
+		t.Fatalf("managed settings missing: %v", args)
+	}
+	if !strings.Contains(joined, "--max-turns 7") {
+		t.Fatalf("unrelated custom arg was dropped: %v", args)
 	}
 }

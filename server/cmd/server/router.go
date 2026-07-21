@@ -220,6 +220,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
+	// The HTTP-triggered create_issue dispatch path consults the two-phase rollout
+	// gate for whether to bind the run to its dispatched task (MUL-4809 §4.1 P0-3).
+	h.AutopilotService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
 	if opts.BusinessMetrics != nil {
@@ -274,6 +277,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		engine.Config{},
 	)
 
+	// Per-platform readers behind the unified `multica chat history` / `thread`
+	// commands (MUL-3871, MUL-4166). Each integration block below registers its
+	// reader by channel type; after both, h.ChatHistory is a channel-type
+	// dispatcher over whatever is configured (nil when neither is).
+	chatHistoryReaders := map[string]handler.ChatChannelHistoryReader{}
+
 	// Lark integration. Only wired when MULTICA_LARK_SECRET_KEY is set:
 	// the InstallationService refuses to fall back to plaintext storage
 	// for app_secret, and the BindingTokenService cannot mint usable
@@ -326,6 +335,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				cs := lark.NewChannelStore(queries)
 				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{})
 				patcher.Register(bus)
+
+				// On-demand history reader behind the unified `multica chat`
+				// commands (MUL-4166): pull the session's Feishu conversation when
+				// the agent asks, the same pull model Slack uses — replacing the
+				// enricher's force-assembled <recent_context> block (disabled
+				// below). Reuses the channel store's binding/installation lookups
+				// and the shared APIClient.
+				chatHistoryReaders[string(channel.TypeFeishu)] = lark.NewHistory(cs, installSvc, larkClient, slog.Default())
 
 				// Typing indicator: shows a "processing" reaction on the user's
 				// message while the agent is working, then removes it before the
@@ -391,8 +408,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					Credentials: installSvc,
 					Logger:      slog.Default(),
 				})
+				mediaResolver := lark.NewFeishuMediaResolver(larkClient, installSvc, store, slog.Default())
 				channelRouter.Register(channel.TypeFeishu, lark.NewFeishuResolverSet(
-					cs, feishuSession, auditLogger, resolverReplier, typingIndicator,
+					cs, feishuSession, auditLogger, resolverReplier, typingIndicator, mediaResolver,
 				))
 				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
@@ -513,7 +531,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// On-demand history reader behind the unified `multica chat history`
 			// command (MUL-3871): pull the session's Slack conversation when the
 			// agent asks, instead of force-assembling it on every inbound.
-			h.SlackHistory = slack.NewHistory(queries, box.Open, slog.Default())
+			chatHistoryReaders[string(slack.TypeSlack)] = slack.NewHistory(queries, box.Open, slog.Default())
 
 			// `/issue` slash command (MUL-3908): a real Slack slash command,
 			// delivered over the same Socket Mode connection. It is a quick-create
@@ -550,6 +568,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	} else {
 		slog.Info("slack integration disabled (MULTICA_SLACK_SECRET_KEY not set)")
 	}
+
+	// Dispatch `multica chat history` / `thread` to the reader for the session's
+	// channel type. NewChatHistoryRouter returns nil when no reader is
+	// configured, so GetChatChannelHistory reports "no channel integration".
+	h.ChatHistory = handler.NewChatHistoryRouter(queries, chatHistoryReaders)
 
 	// Composio integration (MUL-3720). Gated by COMPOSIO_API_KEY plus the
 	// composio_mcp_apps feature flag. The env var is the project-scoped key the
@@ -1036,6 +1059,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
 				r.Get("/children", h.ListChildrenByParents)
+				r.Get("/relations", h.ListRelationsForIssues)
 				r.Get("/grouped", h.ListGroupedIssues)
 				r.Get("/", h.ListIssues)
 				// POST twin of GET /api/issues for oversized filter sets
@@ -1069,6 +1093,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/labels", h.ListLabelsForIssue)
 					r.Post("/labels", h.AttachLabel)
 					r.Delete("/labels/{labelId}", h.DetachLabel)
+					r.Get("/relations", h.ListIssueRelations)
+					r.Post("/relations", h.AddIssueRelation)
+					r.Delete("/relations/{relationId}", h.RemoveIssueRelation)
+					r.Get("/relations", h.ListIssueRelations)
+					r.Post("/relations", h.AddIssueRelation)
+					r.Delete("/relations/{relationId}", h.RemoveIssueRelation)
 					r.Get("/metadata", h.ListIssueMetadata)
 					r.Put("/metadata/{key}", h.SetIssueMetadataKey)
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
@@ -1080,6 +1110,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Task messages (user-facing, not daemon auth)
 			r.Get("/api/tasks/{taskId}/messages", h.ListTaskMessagesByUser)
+			// Single task metadata — hydrates the transcript dialog header from a
+			// bare task id (comment.source_task_id / chat message.task_id).
+			r.Get("/api/tasks/{taskId}", h.GetTaskByUser)
 
 			// Custom issue properties (definitions; values live under /api/issues/{id}/properties)
 			r.Route("/api/properties", func(r chi.Router) {
@@ -1088,6 +1121,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetProperty)
 					r.Patch("/", h.UpdateProperty)
+				})
+			})
+
+			// Custom issue status catalog (MUL-4809). GET is readable by any
+			// member/agent (the alias table drives `issue status`); writes are
+			// human owner/admin only.
+			r.Route("/api/issue-statuses", func(r chi.Router) {
+				r.Get("/", h.ListIssueStatuses)
+				r.Post("/", h.CreateIssueStatus)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Patch("/", h.UpdateIssueStatus)
+					r.Delete("/", h.DeleteIssueStatus)
 				})
 			})
 
@@ -1215,6 +1260,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/labels", h.AttachLabelToAgent)
 					r.Delete("/labels/{labelId}", h.DetachLabelFromAgent)
 					r.Put("/skills/{skillId}/enabled", h.SetAgentSkillEnabled)
+					r.Put("/runtime-skills/enabled", h.SetAgentRuntimeSkillEnabled)
 					r.Delete("/skills/{skillId}", h.RemoveAgentSkill)
 					// Dedicated env-management endpoint. Owner/admin only;
 					// agent actors are denied. Every reveal / write is
@@ -1222,6 +1268,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// internal/handler/agent_env.go.
 					r.Get("/env", h.GetAgentEnv)
 					r.Put("/env", h.UpdateAgentEnv)
+					r.Get("/runtime-binding", h.GetMyAgentRuntimeBinding)
+					r.Put("/runtime-binding", h.UpsertMyAgentRuntimeBinding)
+					r.Delete("/runtime-binding", h.DeleteMyAgentRuntimeBinding)
 				})
 			})
 
@@ -1247,6 +1296,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/labels", h.ListLabelsForSkill)
 					r.Post("/labels", h.AttachLabelToSkill)
 					r.Delete("/labels/{labelId}", h.DetachLabelFromSkill)
+					r.Post("/sync", h.SyncSkillFromOrigin)
 					r.Get("/files", h.ListSkillFiles)
 					r.Put("/files", h.UpsertSkillFile)
 					r.Delete("/files/{fileId}", h.DeleteSkillFile)
@@ -1288,6 +1338,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// `runtime_has_active_agents` and the user confirmed the
 					// cascade plan.
 					r.Post("/archive-agents-and-delete", h.ArchiveAgentsAndDeleteRuntime)
+					r.Post("/resume", h.ResumeRuntime)
 				})
 			})
 
@@ -1436,13 +1487,19 @@ func buildLarkConnector(installSvc *lark.InstallationService, apiClient lark.API
 		}
 		return creds, nil
 	})
-	// Inbound enricher: expands quoted replies / forwarded bundles AND
-	// prefetches a window of surrounding group history (MUL-3084) into the
-	// agent's body via the IM API before dispatch. It shares the
-	// connector's resolved credentials and runs under the connector's
-	// EnrichTimeout so it cannot overrun the Lark long-conn ACK budget.
+	// Inbound enricher: expands quoted replies / forwarded bundles the user
+	// EXPLICITLY attached to the trigger message (not recoverable from channel
+	// history), before dispatch. It shares the connector's resolved credentials
+	// and runs under the connector's EnrichTimeout so it cannot overrun the Lark
+	// long-conn ACK budget.
+	//
+	// RecentContextSize is 0 (recent-history prefetch disabled): surrounding
+	// group context is now PULLED on demand via `multica chat history`
+	// (MUL-4166), the same model Slack uses, instead of force-assembling a
+	// <recent_context> block into every inbound. Quote/forward expansion stays —
+	// it is trigger-specific content the history pull cannot reconstruct.
 	enricher := lark.NewInboundEnricher(apiClient, lark.InboundEnricherConfig{
-		RecentContextSize: lark.DefaultRecentContextSize,
+		RecentContextSize: 0,
 		Logger:            slog.Default(),
 	})
 	conn, err := lark.NewWSLongConnConnector(lark.WSConnectorConfig{

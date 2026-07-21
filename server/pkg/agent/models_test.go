@@ -30,6 +30,16 @@ func TestListModelsStaticProviders(t *testing.T) {
 	}
 }
 
+func TestListModelsQwenUsesRuntimeDefaultAndManualEntry(t *testing.T) {
+	got, err := ListModels(context.Background(), "qwen", "")
+	if err != nil {
+		t.Fatalf("ListModels(qwen) error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListModels(qwen) = %+v, want no account-specific static catalog", got)
+	}
+}
+
 func TestListModelsCopilotFallsBackToStatic(t *testing.T) {
 	// Copilot uses dynamic ACP discovery, but with no `copilot`
 	// binary on PATH (the discovery LookPath fails) it must fall
@@ -681,6 +691,45 @@ func TestDiscoverPiModelsNonZeroExit(t *testing.T) {
 				t.Fatalf("expected exactly [glm-coding-plan/glm-4.7] despite non-zero exit, got %+v", models)
 			}
 		})
+	}
+}
+
+// TestParsePiModelsSkipsForkUsageHints verifies that the CLI usage/diagnostic
+// text a pi fork prints when it does not understand `--list-models` (e.g.
+// oh-my-pi moved listing to the `omp models` subcommand) is not coined into
+// bogus models. The error line is caught by the existing error: prefix, but the
+// usage hint ("Run `omp --help` for available flags.") slipped past the filter
+// and produced a `Run/...` entry. See GitHub #4482.
+func TestParsePiModelsSkipsForkUsageHints(t *testing.T) {
+	input := "Error: unknown flag: --list-models\n" +
+		"Run `omp --help` for available flags.\n"
+	if models := parsePiModels(input); len(models) != 0 {
+		t.Fatalf("expected no models from a fork's usage text, got %+v", models)
+	}
+}
+
+// TestDiscoverPiModelsUnsupportedFlagReturnsEmpty verifies that a pi-family fork
+// whose binary does not support `--list-models` (exits non-zero with only error
+// and usage text, no catalog) yields an empty list rather than models coined
+// from the diagnostic prose. This must hold without regressing the #3729 path
+// where a non-zero exit still carries a real catalog on stderr. See #4482.
+func TestDiscoverPiModelsUnsupportedFlagReturnsEmpty(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pi binary is a /bin/sh script")
+	}
+	script := "#!/bin/sh\n" +
+		"echo 'Error: unknown flag: --list-models' >&2\n" +
+		"echo 'Run `omp --help` for available flags.' >&2\n" +
+		"exit 1\n"
+	fakePath := filepath.Join(t.TempDir(), "omp")
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	models, err := discoverPiModels(context.Background(), fakePath)
+	if err != nil {
+		t.Fatalf("discoverPiModels: %v", err)
+	}
+	if len(models) != 0 {
+		t.Fatalf("expected an empty catalog for a fork lacking --list-models, got %+v", models)
 	}
 }
 

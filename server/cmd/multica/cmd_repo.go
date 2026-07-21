@@ -334,6 +334,19 @@ func runRepoRemove(cmd *cobra.Command, args []string) error {
 func runRepoCheckout(cmd *cobra.Command, args []string) error {
 	repoURL := args[0]
 
+	// Fixed repo mode: the task is already bound to a server-locked local
+	// directory. Cloning/checking out a repo over it is exactly what fixed
+	// repo mode exists to avoid, so refuse with clear guidance instead of
+	// letting the agent overwrite the user's working directory.
+	if strings.TrimSpace(os.Getenv("MULTICA_FIXED_REPO_MODE")) == "true" {
+		fixedPath := strings.TrimSpace(os.Getenv("MULTICA_FIXED_REPO_PATH"))
+		return fmt.Errorf(
+			"this task runs in fixed repo mode: it is bound to the existing directory %q and will not clone or checkout a repo.\n"+
+				"Work directly in the current directory and use its own VCS tooling (git/p4/etc.) to switch branches or sync code.",
+			fixedPath,
+		)
+	}
+
 	daemonPort := os.Getenv("MULTICA_DAEMON_PORT")
 	if daemonPort == "" {
 		return fmt.Errorf("MULTICA_DAEMON_PORT not set (this command is intended to be run by an agent inside a daemon task)")

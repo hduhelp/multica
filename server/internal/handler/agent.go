@@ -34,18 +34,26 @@ import (
 // char_length and the front-end's String.prototype.length-with-counter UX.
 const maxAgentDescriptionLength = 255
 
+const (
+	maxFixedRepoPaths              = 16
+	maxFixedRepoPathLength         = 4096
+	maxFixedRepoCleanupScriptBytes = 4096
+	defaultFixedRepoVcsType        = "git"
+)
+
 type AgentResponse struct {
-	ID            string          `json:"id"`
-	WorkspaceID   string          `json:"workspace_id"`
-	RuntimeID     string          `json:"runtime_id"`
-	Name          string          `json:"name"`
-	Description   string          `json:"description"`
-	Instructions  string          `json:"instructions"`
-	AvatarURL     *string         `json:"avatar_url"`
-	RuntimeMode   string          `json:"runtime_mode"`
-	RuntimeConfig any             `json:"runtime_config"`
-	CustomArgs    []string        `json:"custom_args"`
-	McpConfig     json.RawMessage `json:"mcp_config"`
+	ID               string          `json:"id"`
+	WorkspaceID      string          `json:"workspace_id"`
+	RuntimeID        string          `json:"runtime_id"`
+	Name             string          `json:"name"`
+	Description      string          `json:"description"`
+	Instructions     string          `json:"instructions"`
+	AvatarURL        *string         `json:"avatar_url"`
+	QueuedTTLSeconds *float64        `json:"queued_ttl_seconds"`
+	RuntimeMode      string          `json:"runtime_mode"`
+	RuntimeConfig    any             `json:"runtime_config"`
+	CustomArgs       []string        `json:"custom_args"`
+	McpConfig        json.RawMessage `json:"mcp_config"`
 	// custom_env is intentionally NOT serialized on agent resources. The
 	// agent_list/get/create/update/archive/restore responses and WS events
 	// only expose coarse metadata (has_custom_env, custom_env_key_count) so
@@ -65,10 +73,14 @@ type AgentResponse struct {
 	// InvocationTargets is the allow-list for a public_to agent. Empty for
 	// private agents. Only populated on the detail / list / create / update
 	// responses that load it; broadcast payloads leave it empty.
-	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
-	Status             string                     `json:"status"`
-	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
-	Model              string                     `json:"model"`
+	InvocationTargets      []AgentInvocationTargetDTO `json:"invocation_targets"`
+	Status                 string                     `json:"status"`
+	MaxConcurrentTasks     int32                      `json:"max_concurrent_tasks"`
+	Model                  string                     `json:"model"`
+	FixedRepoEnabled       bool                       `json:"fixed_repo_enabled"`
+	FixedRepoPaths         []string                   `json:"fixed_repo_paths"`
+	FixedRepoVcsType       string                     `json:"fixed_repo_vcs_type"`
+	FixedRepoCleanupScript *string                    `json:"fixed_repo_cleanup_script"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
@@ -84,14 +96,15 @@ type AgentResponse struct {
 	// members infer another member's integration footprint. Redacted to
 	// `nil` + `composio_toolkit_allowlist_redacted=true` for non-owners,
 	// mirroring the existing mcp_config redaction contract.
-	ComposioToolkitAllowlist         []string            `json:"composio_toolkit_allowlist,omitempty"`
-	ComposioToolkitAllowlistRedacted bool                `json:"composio_toolkit_allowlist_redacted,omitempty"`
-	OwnerID                          *string             `json:"owner_id"`
-	Skills                           []AgentSkillSummary `json:"skills"`
-	CreatedAt                        string              `json:"created_at"`
-	UpdatedAt                        string              `json:"updated_at"`
-	ArchivedAt                       *string             `json:"archived_at"`
-	ArchivedBy                       *string             `json:"archived_by"`
+	ComposioToolkitAllowlist         []string               `json:"composio_toolkit_allowlist,omitempty"`
+	ComposioToolkitAllowlistRedacted bool                   `json:"composio_toolkit_allowlist_redacted,omitempty"`
+	OwnerID                          *string                `json:"owner_id"`
+	Skills                           []AgentSkillSummary    `json:"skills"`
+	DisabledRuntimeSkills            []DisabledRuntimeSkill `json:"disabled_runtime_skills"`
+	CreatedAt                        string                 `json:"created_at"`
+	UpdatedAt                        string                 `json:"updated_at"`
+	ArchivedAt                       *string                `json:"archived_at"`
+	ArchivedBy                       *string                `json:"archived_by"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for
@@ -102,6 +115,14 @@ type AgentResponse struct {
 // agent and submits the same mask verbatim under that field, the update
 // handler restores the persisted token instead of overwriting it.
 const runtimeConfigGatewayTokenMask = "***"
+
+func float8ToPtr(v pgtype.Float8) *float64 {
+	if !v.Valid {
+		return nil
+	}
+	value := v.Float64
+	return &value
+}
 
 func agentToResponse(a db.Agent) AgentResponse {
 	var rc any
@@ -150,6 +171,10 @@ func agentToResponse(a db.Agent) AgentResponse {
 	// non-empty). We hand the slice through verbatim so the redaction +
 	// owner-only gate below can decide.
 	composioAllowlist := a.ComposioToolkitAllowlist
+	fixedRepoVcsType := a.FixedRepoVcsType
+	if fixedRepoVcsType == "" {
+		fixedRepoVcsType = defaultFixedRepoVcsType
+	}
 
 	return AgentResponse{
 		ID:                       uuidToString(a.ID),
@@ -159,6 +184,7 @@ func agentToResponse(a db.Agent) AgentResponse {
 		Description:              a.Description,
 		Instructions:             a.Instructions,
 		AvatarURL:                textToPtr(a.AvatarUrl),
+		QueuedTTLSeconds:         float8ToPtr(a.QueuedTtlSeconds),
 		RuntimeMode:              a.RuntimeMode,
 		RuntimeConfig:            rc,
 		CustomArgs:               customArgs,
@@ -171,15 +197,98 @@ func agentToResponse(a db.Agent) AgentResponse {
 		Status:                   a.Status,
 		MaxConcurrentTasks:       a.MaxConcurrentTasks,
 		Model:                    a.Model.String,
+		FixedRepoEnabled:         a.FixedRepoEnabled,
+		FixedRepoPaths:           decodeStringSliceJSON(a.FixedRepoPaths),
+		FixedRepoVcsType:         fixedRepoVcsType,
+		FixedRepoCleanupScript:   textToPtr(a.FixedRepoCleanupScript),
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ComposioToolkitAllowlist: composioAllowlist,
 		OwnerID:                  uuidToPtr(a.OwnerID),
 		Skills:                   []AgentSkillSummary{},
+		DisabledRuntimeSkills:    decodeDisabledRuntimeSkills(a.DisabledRuntimeSkills),
 		CreatedAt:                timestampToString(a.CreatedAt),
 		UpdatedAt:                timestampToString(a.UpdatedAt),
 		ArchivedAt:               timestampToPtr(a.ArchivedAt),
 		ArchivedBy:               uuidToPtr(a.ArchivedBy),
 	}
+}
+
+func isKnownFixedRepoVcsType(v string) bool {
+	switch v {
+	case "git", "perforce", "none", "custom":
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeStringSliceJSON(raw []byte) []string {
+	if len(raw) == 0 {
+		return []string{}
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		slog.Warn("failed to unmarshal fixed_repo_paths", "error", err)
+		return []string{}
+	}
+	if out == nil {
+		return []string{}
+	}
+	return out
+}
+
+func encodeStringSliceJSON(values []string) []byte {
+	raw, err := json.Marshal(values)
+	if err != nil {
+		slog.Warn("failed to marshal fixed_repo_paths", "error", err)
+		return []byte("[]")
+	}
+	return raw
+}
+
+func normalizeFixedRepoPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func validateFixedRepoConfig(enabled bool, paths []string, vcsType string, cleanupScript *string, runtimeMode string) error {
+	if vcsType == "" {
+		vcsType = defaultFixedRepoVcsType
+	}
+	if !isKnownFixedRepoVcsType(vcsType) {
+		return fmt.Errorf("fixed_repo_vcs_type %q is not supported", vcsType)
+	}
+	if len(paths) > maxFixedRepoPaths {
+		return fmt.Errorf("fixed_repo_paths must contain %d paths or fewer", maxFixedRepoPaths)
+	}
+	for _, p := range paths {
+		if utf8.RuneCountInString(p) > maxFixedRepoPathLength {
+			return fmt.Errorf("fixed_repo_paths entries must be %d characters or fewer", maxFixedRepoPathLength)
+		}
+	}
+	if cleanupScript != nil && utf8.RuneCountInString(*cleanupScript) > maxFixedRepoCleanupScriptBytes {
+		return fmt.Errorf("fixed_repo_cleanup_script must be %d characters or fewer", maxFixedRepoCleanupScriptBytes)
+	}
+	if !enabled {
+		return nil
+	}
+	if runtimeMode != "local" {
+		return fmt.Errorf("fixed_repo_enabled requires a local runtime")
+	}
+	if len(paths) == 0 {
+		return fmt.Errorf("fixed_repo_paths is required when fixed_repo_enabled is true")
+	}
+	return nil
 }
 
 // maskGatewayToken replaces runtime_config.gateway.token with the public
@@ -384,6 +493,16 @@ type AgentTaskResponse struct {
 	// owning user; the daemon must not fall back to its own credential. See
 	// MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+	// Fixed repo mode (fixed-repo-mode design): when the claimed agent runs in
+	// fixed repo mode, the server has locked one of its configured
+	// fixed_repo_paths to this task. The daemon runs the agent directly in
+	// FixedRepoPath instead of cloning/checking out a worktree, and rejects
+	// `multica repo checkout`. FixedRepoCleanupScript is forwarded for v1 but
+	// not executed by the daemon yet. Absent (mode=false) for normal tasks.
+	FixedRepoMode          bool   `json:"fixed_repo_mode,omitempty"`
+	FixedRepoPath          string `json:"fixed_repo_path,omitempty"`
+	FixedRepoVcsType       string `json:"fixed_repo_vcs_type,omitempty"`
+	FixedRepoCleanupScript string `json:"fixed_repo_cleanup_script,omitempty"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
@@ -556,16 +675,17 @@ type CoalescedCommentData struct {
 // TaskAgentData holds agent info included in claim responses so the daemon
 // can set up the execution environment (branch naming, skill files, instructions).
 type TaskAgentData struct {
-	ID            string                      `json:"id"`
-	Name          string                      `json:"name"`
-	Instructions  string                      `json:"instructions"`
-	Skills        []service.AgentSkillData    `json:"skills,omitempty"`
-	SkillRefs     []service.AgentSkillRefData `json:"skill_refs,omitempty"`
-	CustomEnv     map[string]string           `json:"custom_env,omitempty"`
-	CustomArgs    []string                    `json:"custom_args,omitempty"`
-	McpConfig     json.RawMessage             `json:"mcp_config,omitempty"`
-	Model         string                      `json:"model,omitempty"`
-	ThinkingLevel string                      `json:"thinking_level,omitempty"`
+	ID                    string                      `json:"id"`
+	Name                  string                      `json:"name"`
+	Instructions          string                      `json:"instructions"`
+	Skills                []service.AgentSkillData    `json:"skills,omitempty"`
+	SkillRefs             []service.AgentSkillRefData `json:"skill_refs,omitempty"`
+	CustomEnv             map[string]string           `json:"custom_env,omitempty"`
+	CustomArgs            []string                    `json:"custom_args,omitempty"`
+	McpConfig             json.RawMessage             `json:"mcp_config,omitempty"`
+	Model                 string                      `json:"model,omitempty"`
+	ThinkingLevel         string                      `json:"thinking_level,omitempty"`
+	DisabledRuntimeSkills []DisabledRuntimeSkill      `json:"disabled_runtime_skills,omitempty"`
 	// RuntimeConfig is the agent's saved runtime_config JSON as-is. The
 	// daemon decodes it per-provider — e.g. the openclaw backend reads
 	// `mode` + `gateway.*` to choose between embedded and gateway routing
@@ -932,11 +1052,16 @@ type CreateAgentRequest struct {
 	// and Visibility is ignored; when absent, legacy Visibility is mapped
 	// (private -> private, workspace -> public_to+workspace target). On create
 	// only the caller can be the owner, so targets are accepted unconditionally.
-	PermissionMode     *string                    `json:"permission_mode"`
-	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
-	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
-	Model              string                     `json:"model"`
-	ThinkingLevel      string                     `json:"thinking_level"`
+	PermissionMode         *string                    `json:"permission_mode"`
+	InvocationTargets      []AgentInvocationTargetDTO `json:"invocation_targets"`
+	MaxConcurrentTasks     int32                      `json:"max_concurrent_tasks"`
+	QueuedTTLSeconds       float64                    `json:"queued_ttl_seconds"`
+	Model                  string                     `json:"model"`
+	ThinkingLevel          string                     `json:"thinking_level"`
+	FixedRepoEnabled       bool                       `json:"fixed_repo_enabled"`
+	FixedRepoPaths         []string                   `json:"fixed_repo_paths"`
+	FixedRepoVcsType       string                     `json:"fixed_repo_vcs_type"`
+	FixedRepoCleanupScript *string                    `json:"fixed_repo_cleanup_script"`
 	// ComposioToolkitAllowlist seeds the per-task overlay gate (MUL-3869). On
 	// create only the calling user can be the owner, so we accept the field
 	// unconditionally here; the cross-owner permission gate lives on PUT.
@@ -1057,6 +1182,16 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fixedRepoPaths := normalizeFixedRepoPaths(req.FixedRepoPaths)
+	fixedRepoVcsType := req.FixedRepoVcsType
+	if fixedRepoVcsType == "" {
+		fixedRepoVcsType = defaultFixedRepoVcsType
+	}
+	if err := validateFixedRepoConfig(req.FixedRepoEnabled, fixedRepoPaths, fixedRepoVcsType, req.FixedRepoCleanupScript, runtime.RuntimeMode); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Probe workspace agent count BEFORE the insert so the funnel has a
 	// clean "first agent ever in this workspace" signal — Step 4 of
 	// onboarding always lands in this branch. A non-fatal read: if the
@@ -1102,6 +1237,17 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		allowlist = nil
 	}
 
+	queuedTTLSeconds := pgtype.Float8{}
+	if rawQueuedTTLSeconds, ok := rawFields["queued_ttl_seconds"]; ok && !bytes.Equal(bytes.TrimSpace(rawQueuedTTLSeconds), []byte("null")) {
+		if req.QueuedTTLSeconds < 0 {
+			writeError(w, http.StatusBadRequest, "queued_ttl_seconds must be 0 or greater")
+			return
+		}
+		if req.QueuedTTLSeconds > 0 {
+			queuedTTLSeconds = pgtype.Float8{Float64: req.QueuedTTLSeconds, Valid: true}
+		}
+	}
+
 	skillUUIDs, ok := parseUUIDSliceOrBadRequest(w, req.SkillIDs, "skill_ids")
 	if !ok {
 		return
@@ -1143,6 +1289,11 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		Model:                    pgtype.Text{String: req.Model, Valid: req.Model != ""},
 		ThinkingLevel:            pgtype.Text{String: req.ThinkingLevel, Valid: req.ThinkingLevel != ""},
 		ComposioToolkitAllowlist: allowlist,
+		FixedRepoEnabled:         req.FixedRepoEnabled,
+		FixedRepoPaths:           encodeStringSliceJSON(fixedRepoPaths),
+		FixedRepoVcsType:         fixedRepoVcsType,
+		FixedRepoCleanupScript:   ptrToText(req.FixedRepoCleanupScript),
+		QueuedTtlSeconds:         queuedTTLSeconds,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -1285,11 +1436,16 @@ type UpdateAgentRequest struct {
 	// gate is owner/allow-list based and an admin-authored allow-list would
 	// confuse the owner about who can run their agent. permission_mode is
 	// authoritative when present; otherwise legacy visibility is mapped.
-	PermissionMode     *string                     `json:"permission_mode"`
-	InvocationTargets  *[]AgentInvocationTargetDTO `json:"invocation_targets"`
-	Status             *string                     `json:"status"`
-	MaxConcurrentTasks *int32                      `json:"max_concurrent_tasks"`
-	Model              *string                     `json:"model"`
+	PermissionMode         *string                     `json:"permission_mode"`
+	InvocationTargets      *[]AgentInvocationTargetDTO `json:"invocation_targets"`
+	Status                 *string                     `json:"status"`
+	MaxConcurrentTasks     *int32                      `json:"max_concurrent_tasks"`
+	QueuedTTLSeconds       float64                     `json:"queued_ttl_seconds"`
+	Model                  *string                     `json:"model"`
+	FixedRepoEnabled       *bool                       `json:"fixed_repo_enabled"`
+	FixedRepoPaths         *[]string                   `json:"fixed_repo_paths"`
+	FixedRepoVcsType       *string                     `json:"fixed_repo_vcs_type"`
+	FixedRepoCleanupScript *string                     `json:"fixed_repo_cleanup_script"`
 	// ThinkingLevel is treated as a tri-state per-MUL-2339:
 	//   - field omitted → no change (leave existing value alone)
 	//   - field present with "" → explicit clear (use runtime default)
@@ -1554,6 +1710,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// runtime to validate a thinking_level change. Resolve once and reuse.
 	targetRuntimeID := existing.RuntimeID
 	targetProvider := ""
+	targetRuntimeMode := existing.RuntimeMode
 	if req.RuntimeID != nil {
 		runtimeUUID, ok := parseUUIDOrBadRequest(w, *req.RuntimeID, "runtime_id")
 		if !ok {
@@ -1582,6 +1739,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
 		targetRuntimeID = runtime.ID
 		targetProvider = runtime.Provider
+		targetRuntimeMode = runtime.RuntimeMode
 	}
 	// Invocation permission (MUL-3963). OWNER-ONLY write: access is the one
 	// agent property a workspace admin may NOT change (only the owner decides
@@ -1741,6 +1899,59 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	nextFixedRepoEnabled := existing.FixedRepoEnabled
+	if req.FixedRepoEnabled != nil {
+		nextFixedRepoEnabled = *req.FixedRepoEnabled
+		params.FixedRepoEnabled = pgtype.Bool{Bool: *req.FixedRepoEnabled, Valid: true}
+	}
+
+	nextFixedRepoPaths := decodeStringSliceJSON(existing.FixedRepoPaths)
+	if req.FixedRepoPaths != nil {
+		nextFixedRepoPaths = normalizeFixedRepoPaths(*req.FixedRepoPaths)
+		params.FixedRepoPaths = encodeStringSliceJSON(nextFixedRepoPaths)
+	}
+
+	nextFixedRepoVcsType := existing.FixedRepoVcsType
+	if nextFixedRepoVcsType == "" {
+		nextFixedRepoVcsType = defaultFixedRepoVcsType
+	}
+	if req.FixedRepoVcsType != nil {
+		nextFixedRepoVcsType = *req.FixedRepoVcsType
+		if nextFixedRepoVcsType == "" {
+			nextFixedRepoVcsType = defaultFixedRepoVcsType
+		}
+		params.FixedRepoVcsType = pgtype.Text{String: nextFixedRepoVcsType, Valid: true}
+	}
+
+	nextCleanupScript := textToPtr(existing.FixedRepoCleanupScript)
+	rawCleanupScript, hasCleanupScript := rawFields["fixed_repo_cleanup_script"]
+	shouldClearFixedRepoCleanupScript := hasCleanupScript && bytes.Equal(bytes.TrimSpace(rawCleanupScript), []byte("null"))
+	if shouldClearFixedRepoCleanupScript {
+		nextCleanupScript = nil
+	} else if req.FixedRepoCleanupScript != nil {
+		nextCleanupScript = req.FixedRepoCleanupScript
+		params.FixedRepoCleanupScript = pgtype.Text{String: *req.FixedRepoCleanupScript, Valid: true}
+	}
+
+	if err := validateFixedRepoConfig(nextFixedRepoEnabled, nextFixedRepoPaths, nextFixedRepoVcsType, nextCleanupScript, targetRuntimeMode); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	rawQueuedTTLSeconds, hasQueuedTTLSeconds := rawFields["queued_ttl_seconds"]
+	shouldClearQueuedTTLSeconds := hasQueuedTTLSeconds && bytes.Equal(bytes.TrimSpace(rawQueuedTTLSeconds), []byte("null"))
+	if hasQueuedTTLSeconds && !shouldClearQueuedTTLSeconds {
+		if req.QueuedTTLSeconds < 0 {
+			writeError(w, http.StatusBadRequest, "queued_ttl_seconds must be 0 or greater")
+			return
+		}
+		if req.QueuedTTLSeconds == 0 {
+			shouldClearQueuedTTLSeconds = true
+		} else {
+			params.QueuedTtlSeconds = pgtype.Float8{Float64: req.QueuedTTLSeconds, Valid: true}
+		}
+	}
+
 	updated, err := h.Queries.UpdateAgent(r.Context(), params)
 	if err != nil {
 		slog.Warn("update agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
@@ -1748,7 +1959,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// mcp_config / thinking_level: null/empty in the request means explicitly
+	// mcp_config / thinking_level / queued_ttl_seconds: null/empty in the request means explicitly
 	// clear the field. COALESCE in UpdateAgent cannot set a column to NULL,
 	// so we use dedicated clear queries.
 	if shouldClearMcpConfig {
@@ -1772,6 +1983,22 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent composio_toolkit_allowlist failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to clear composio_toolkit_allowlist: "+err.Error())
+			return
+		}
+	}
+	if shouldClearFixedRepoCleanupScript {
+		updated, err = h.Queries.ClearAgentFixedRepoCleanupScript(r.Context(), updated.ID)
+		if err != nil {
+			slog.Warn("clear agent fixed_repo_cleanup_script failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to clear fixed_repo_cleanup_script: "+err.Error())
+			return
+		}
+	}
+	if shouldClearQueuedTTLSeconds {
+		updated, err = h.Queries.ClearAgentQueuedTTLSeconds(r.Context(), updated.ID)
+		if err != nil {
+			slog.Warn("clear agent queued_ttl_seconds failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to clear queued_ttl_seconds: "+err.Error())
 			return
 		}
 	}
@@ -1807,6 +2034,11 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	userID := requestUserID(r)
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(updated.WorkspaceID))
 	h.publish(protocol.EventAgentStatus, uuidToString(updated.WorkspaceID), actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	// agent:status doubles as a presence signal (runtime sweeper, env-var
+	// changes), so external consumers can't tell "definition changed" from
+	// "status flipped". agent:updated fires only for definition updates —
+	// mirrors/webhook-style integrations subscribe to this one.
+	h.publish(protocol.EventAgentUpdated, uuidToString(updated.WorkspaceID), actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
 	redactAgentResponseForActor(&resp, actorType)
 	// Workspace admins / non-owner members pass canManageAgent for legitimate
 	// admin actions (e.g. bulk reassigning agents off a leaving member's
@@ -1893,6 +2125,13 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("cancel agent tasks on archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 	} else {
 		h.TaskService.CaptureCancelledTasks(r.Context(), cancelled)
+	}
+	// This archive path cancels via the raw query (not TaskService), so release
+	// any fixed repo path locks held by the agent's now-cancelled tasks
+	// explicitly — otherwise an archived fixed-repo agent could leave a path
+	// permanently locked. Idempotent no-op for non-fixed-repo agents.
+	if err := h.Queries.ReleaseFixedRepoLocksByAgent(r.Context(), agent.ID); err != nil {
+		slog.Warn("release fixed repo locks on archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 	}
 
 	wsID := uuidToString(archived.WorkspaceID)
@@ -2014,10 +2253,11 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 // AgentActivityBucket is one day-bucketed throughput sample for the
-// Agents-list ACTIVITY sparkline. bucket_at is midnight UTC of the day.
+// Agents-list ACTIVITY sparkline. date is the calendar day (YYYY-MM-DD)
+// in the viewer's timezone (see resolveViewingTZ).
 type AgentActivityBucket struct {
 	AgentID     string `json:"agent_id"`
-	BucketAt    string `json:"bucket_at"`
+	Date        string `json:"date"`
 	TaskCount   int32  `json:"task_count"`
 	FailedCount int32  `json:"failed_count"`
 }
@@ -2073,6 +2313,9 @@ func (h *Handler) GetWorkspaceAgentRunCounts(w http.ResponseWriter, r *http.Requ
 // agent detail "Last 30 days" panel (uses all 30) — one fetch is cheaper
 // than two. Front-end fills missing days with zero; the back-end omits
 // empty buckets to keep the response small.
+//
+// Days are cut in the viewer's tz so the sparkline agrees with the
+// dashboard/runtime usage reports on which day a task belongs to.
 func (h *Handler) GetWorkspaceAgentActivity30d(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	member, ok := h.workspaceMember(w, r, workspaceID)
@@ -2080,7 +2323,12 @@ func (h *Handler) GetWorkspaceAgentActivity30d(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	rows, err := h.Queries.GetWorkspaceAgentActivity30d(r.Context(), parseUUID(workspaceID))
+	viewTZ := h.resolveViewingTZ(r)
+	rows, err := h.Queries.GetWorkspaceAgentActivity30d(r.Context(), db.GetWorkspaceAgentActivity30dParams{
+		WorkspaceID: parseUUID(workspaceID),
+		Tz:          viewTZ,
+		Since:       parseSinceParamInTZ(r, 30, viewTZ),
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get agent activity")
 		return
@@ -2101,7 +2349,7 @@ func (h *Handler) GetWorkspaceAgentActivity30d(w http.ResponseWriter, r *http.Re
 		}
 		resp = append(resp, AgentActivityBucket{
 			AgentID:     agentID,
-			BucketAt:    timestampToString(row.Bucket),
+			Date:        row.Date.Time.Format("2006-01-02"),
 			TaskCount:   row.TaskCount,
 			FailedCount: row.FailedCount,
 		})

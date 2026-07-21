@@ -216,11 +216,13 @@ type Handler struct {
 	// "link your Slack account" prompt (MUL-3666). Nil unless Slack is
 	// configured (MULTICA_SLACK_SECRET_KEY set).
 	SlackBindingTokens *slack.BindingTokenService
-	// SlackHistory backs the agent-facing `multica chat history` command: it
-	// reads a chat session's bound Slack conversation on demand (MUL-3871). Nil
-	// unless Slack is configured; GetChatChannelHistory then reports "no channel
-	// integration". A future platform satisfies the same reader interface.
-	SlackHistory ChatChannelHistoryReader
+	// ChatHistory backs the agent-facing `multica chat history` / `multica chat
+	// thread` commands: it reads a chat session's bound IM conversation on
+	// demand (MUL-3871, MUL-4166). In production it is a channel-type dispatcher
+	// (NewChatHistoryRouter) over the per-platform readers (Slack, Feishu). Nil
+	// when no channel integration is configured; GetChatChannelHistory then
+	// reports "no channel integration".
+	ChatHistory ChatChannelHistoryReader
 	// LLM is the basic LLM API layer (MUL-4238): a thin wrapper over the
 	// OpenAI Go SDK backing server-internal one-shot LLM helpers such as chat
 	// title generation. The generic passthrough endpoints were removed in
@@ -300,6 +302,11 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		cfg: cfg,
 	}
 	h.WebhookDeliveryWorker = NewWebhookDeliveryWorker(h)
+	// Wire the shared post-terminal comment reconciler so the service-layer
+	// terminal transitions (complete / fail / cancel / sweeper fail) replay
+	// undelivered comment triggers. The sweeper's own TaskService is wired to
+	// the same method in cmd/server (it is a separate instance from this one).
+	h.TaskService.ReconcileTerminal = h.ReconcileTerminalTask
 	return h
 }
 
@@ -511,20 +518,26 @@ func requestUserID(r *http.Request) string {
 //
 // First-class signal: X-Actor-Source set to "task_token" means the request
 // authenticated via an `mat_` task-scoped token. The auth middleware sets
-// that header (and stripped any client-supplied value first), so it is
-// authoritative — the bound (agent_id, task_id) cannot be forged or
+// that header (and re-stamps X-Agent-ID / X-Task-ID from the token row), so it
+// is authoritative — the bound (agent_id, task_id) cannot be forged or
 // stripped by the agent process. This is the path MUL-2600 relies on to
-// reject agent-process traffic on owner-only endpoints.
+// reject agent-process traffic on owner-only endpoints. ALL production traffic
+// that reaches a resolveActor handler comes through the Auth or DaemonAuth
+// middleware, both of which now strip any client-supplied X-Agent-ID /
+// X-Task-ID on entry, so the only way these headers are set on a real request
+// is the server-controlled task-token branch above.
 //
-// Fallback signal (legacy CLI / member-token paths): the request MUST
-// carry both X-Agent-ID and a valid X-Task-ID, and the task must belong
-// to the claimed agent. Otherwise we fall back to "member".
-//
-// X-Agent-ID alone is not trusted: any workspace member can guess or observe
-// an agent's UUID, and a member-supplied X-Agent-ID would otherwise let that
-// member impersonate the agent and bypass the private-agent gate (#2359
-// review). The daemon always pairs the two headers, so requiring both has
-// no effect on legitimate agent callers but closes the impersonation path.
+// Fallback signal: a request carrying both X-Agent-ID and a matching valid
+// X-Task-ID is treated as that agent. This path is NOT a security boundary:
+// both ids are returned by member-readable endpoints
+// (GET /api/issues/{id}/task-runs, GET /api/agents/{id}/tasks), so a member
+// who could supply these headers could trivially forge an agent identity and
+// bypass the private-agent gate. It is the middleware header-stripping above
+// that closes that forgery — NOT the (insufficient) task.AgentID == agentID
+// check here. The fallback survives only so in-process callers and handler
+// unit tests can assert agent-actor behaviour by setting the headers directly;
+// it is unreachable from the network because the middleware strips the
+// headers first.
 //
 // Returns ("agent", agentID) on success, ("member", userID) otherwise.
 func (h *Handler) resolveActor(r *http.Request, userID, workspaceID string) (actorType, actorID string) {

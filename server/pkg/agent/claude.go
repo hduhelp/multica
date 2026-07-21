@@ -147,6 +147,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		invalidEventCount := 0
 		assistantEventCount := 0
 		toolUseCount := 0
+		cadence := newStreamEventCadence(startTime)
 
 		// Close stdout when the context is cancelled so scanner.Scan() unblocks.
 		go func() {
@@ -170,11 +171,18 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				continue
 			}
 			eventCount++
+			// Stamp arrival before dispatch so handler time never inflates a gap,
+			// but record progress only after the handler reports what it actually
+			// emitted — the watchdog measures delivered progress messages, not raw
+			// event types, and the two diverge on empty turns (MUL-5042).
+			eventAt := time.Now()
+			eventProgressed := false
 
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
-				assistantText, tools := b.handleAssistant(msg, msgCh, usage)
+				assistantText, tools, progressed := b.handleAssistant(msg, msgCh, usage)
+				eventProgressed = progressed
 				toolUseCount += tools
 				if tools == 0 {
 					lastAssistantText = assistantText
@@ -184,7 +192,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					lastAssistantText = ""
 				}
 			case "user":
-				if b.handleUser(msg, msgCh) {
+				launched, progressed := b.handleUser(msg, msgCh)
+				eventProgressed = progressed
+				if launched {
 					sawAsyncLaunch = true
 				}
 			case "system":
@@ -212,7 +222,18 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			case "control_request":
 				b.handleControlRequest(msg, stdin)
 			}
+
+			// `result` is deliberately absent from the progress cases above: it
+			// is the terminal event and produces no progress message, so letting
+			// it reset the gap would shrink max_progress_gap on every healthy run
+			// and bias the threshold this data is meant to inform (MUL-5042).
+			cadence.observe(eventAt, msg.Type, eventProgressed)
 		}
+		// Snapshot here, not after cmd.Wait(): the stream is what stalled, so
+		// the trailing gap has to be measured to the moment stdout stopped
+		// producing events, before process teardown adds its own delay.
+		cadenceSnapshot := cadence.snapshot(time.Now())
+
 		scanErr := scanner.Err()
 		if scanErr != nil {
 			// Scanner stopped consuming stdout. Close the pipe before Wait so a
@@ -270,6 +291,10 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			invalidEventCount:          invalidEventCount,
 			assistantEventCount:        assistantEventCount,
 			toolUseCount:               toolUseCount,
+			eventTypeCounts:            cadenceSnapshot.typeCounts,
+			maxEventGap:                cadenceSnapshot.maxGap,
+			maxEventGapEndedBy:         cadenceSnapshot.maxGapEndedBy,
+			maxProgressGap:             cadenceSnapshot.maxProgressGap,
 			sawResult:                  sawResult,
 			resultIsError:              resultIsError,
 			resultBytes:                len(finalResultText),
@@ -301,13 +326,19 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	return &Session{Messages: msgCh, Result: resCh}, nil
 }
 
-func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage) (string, int) {
+// handleAssistant fans an assistant turn out to the message channel. The third
+// return reports whether at least one progress message actually reached the
+// consumer: an assistant event whose content parses to nothing (or whose sends
+// were all dropped) advances nothing, and must not be counted as progress
+// (MUL-5042).
+func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage) (string, int, bool) {
 	var content claudeMessageContent
 	if err := json.Unmarshal(msg.Message, &content); err != nil {
-		return "", 0
+		return "", 0, false
 	}
 	var assistantText strings.Builder
 	toolUseCount := 0
+	progressed := false
 
 	// Accumulate token usage per model.
 	if content.Usage != nil && content.Model != "" {
@@ -324,11 +355,11 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		case "text":
 			if block.Text != "" {
 				assistantText.WriteString(block.Text)
-				trySend(ch, Message{Type: MessageText, Content: block.Text})
+				progressed = trySend(ch, Message{Type: MessageText, Content: block.Text}) || progressed
 			}
 		case "thinking":
 			if block.Text != "" {
-				trySend(ch, Message{Type: MessageThinking, Content: block.Text})
+				progressed = trySend(ch, Message{Type: MessageThinking, Content: block.Text}) || progressed
 			}
 		case "tool_use":
 			toolUseCount++
@@ -336,41 +367,45 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 			if block.Input != nil {
 				_ = json.Unmarshal(block.Input, &input)
 			}
-			trySend(ch, Message{
+			progressed = trySend(ch, Message{
 				Type:   MessageToolUse,
 				Tool:   block.Name,
 				CallID: block.ID,
 				Input:  input,
-			})
+			}) || progressed
 		}
 	}
-	return assistantText.String(), toolUseCount
+	return assistantText.String(), toolUseCount, progressed
 }
 
-func (b *claudeBackend) handleUser(msg claudeSDKMessage, ch chan<- Message) bool {
+// handleUser forwards tool results. The second return reports whether a tool
+// result actually reached the consumer — a `user` event carrying no tool_result
+// block advances nothing and must not count as progress (MUL-5042).
+func (b *claudeBackend) handleUser(msg claudeSDKMessage, ch chan<- Message) (bool, bool) {
 	var content claudeMessageContent
 	if err := json.Unmarshal(msg.Message, &content); err != nil {
-		return false
+		return false, false
 	}
 
 	sawAsyncLaunch := false
+	progressed := false
 	for _, block := range content.Content {
 		if block.Type == "tool_result" {
 			resultStr := ""
 			if block.Content != nil {
 				resultStr = string(block.Content)
-				if claudeToolResultHasAsyncLaunch(block.Content) {
+				if streamJSONToolResultHasAsyncLaunch(block.Content) {
 					sawAsyncLaunch = true
 				}
 			}
-			trySend(ch, Message{
+			progressed = trySend(ch, Message{
 				Type:   MessageToolResult,
 				CallID: block.ToolUseID,
 				Output: resultStr,
-			})
+			}) || progressed
 		}
 	}
-	return sawAsyncLaunch
+	return sawAsyncLaunch, progressed
 }
 
 func (b *claudeBackend) handleControlRequest(msg claudeSDKMessage, stdin interface{ Write([]byte) (int, error) }) {
@@ -387,7 +422,7 @@ func (b *claudeBackend) handleControlRequest(msg claudeSDKMessage, stdin interfa
 	if inputMap == nil {
 		inputMap = map[string]any{}
 	}
-	if forceClaudeToolInputForeground(inputMap) {
+	if forceStreamJSONToolInputForeground(inputMap) {
 		b.cfg.Logger.Info("claude: forced foreground tool execution",
 			"request_id", msg.RequestID,
 			"tool", req.ToolName,
@@ -415,50 +450,6 @@ func (b *claudeBackend) handleControlRequest(msg claudeSDKMessage, stdin interfa
 	if _, err := stdin.Write(data); err != nil {
 		b.cfg.Logger.Warn("claude: failed to write control response", "error", err)
 	}
-}
-
-func forceClaudeToolInputForeground(input map[string]any) bool {
-	if runInBackground, ok := input["run_in_background"].(bool); ok && runInBackground {
-		input["run_in_background"] = false
-		return true
-	}
-	return false
-}
-
-func claudeToolResultHasAsyncLaunch(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return false
-	}
-	switch v := value.(type) {
-	case map[string]any:
-		if claudeMapHasAsyncLaunchStatus(v) {
-			return true
-		}
-		if content, ok := v["content"].([]any); ok {
-			return claudeArrayHasAsyncLaunchStatus(content)
-		}
-	case []any:
-		return claudeArrayHasAsyncLaunchStatus(v)
-	}
-	return false
-}
-
-func claudeArrayHasAsyncLaunchStatus(values []any) bool {
-	for _, value := range values {
-		if item, ok := value.(map[string]any); ok && claudeMapHasAsyncLaunchStatus(item) {
-			return true
-		}
-	}
-	return false
-}
-
-func claudeMapHasAsyncLaunchStatus(value map[string]any) bool {
-	status, ok := value["status"].(string)
-	return ok && status == "async_launched"
 }
 
 // ── Claude SDK JSON types ──
@@ -575,12 +566,18 @@ type claudeControlRequestPayload struct {
 
 // ── Shared helpers ──
 
-func trySend(ch chan<- Message, msg Message) {
+// trySend reports whether the message was actually handed to the consumer.
+// A dropped message never reaches the daemon, so it never counts as progress
+// for the idle watchdog — callers tracking progress must use this result
+// rather than assuming the send landed (MUL-5042).
+func trySend(ch chan<- Message, msg Message) bool {
 	select {
 	case ch <- msg:
+		return true
 	default:
 		// Channel full — drop message. Result.Output is finalized independently,
 		// so only live transcript consumers are affected.
+		return false
 	}
 }
 
@@ -642,8 +639,22 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)
 	}
-	args = append(args, filterCustomArgs(opts.ExtraArgs, claudeBlockedArgs, logger)...)
-	args = append(args, filterCustomArgs(opts.CustomArgs, claudeBlockedArgs, logger)...)
+	blockedArgs := claudeBlockedArgs
+	if opts.ClaudeSettingsPath != "" {
+		// The daemon-owned --settings file is the enforcement layer for disabled
+		// inherited skills. Drop competing per-agent/default flags only while that
+		// policy is active, then append the managed file last.
+		blockedArgs = make(map[string]blockedArgMode, len(claudeBlockedArgs)+1)
+		for key, mode := range claudeBlockedArgs {
+			blockedArgs[key] = mode
+		}
+		blockedArgs["--settings"] = blockedWithValue
+	}
+	args = append(args, filterCustomArgs(opts.ExtraArgs, blockedArgs, logger)...)
+	args = append(args, filterCustomArgs(opts.CustomArgs, blockedArgs, logger)...)
+	if opts.ClaudeSettingsPath != "" {
+		args = append(args, "--settings", opts.ClaudeSettingsPath)
+	}
 	return args
 }
 

@@ -16,6 +16,7 @@ import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
 import { labelKeys } from "../labels/queries";
 import { propertyKeys } from "../properties/queries";
+import { issueStatusKeys } from "../issue-statuses/queries";
 import {
   agentTaskSnapshotKeys,
   agentActivityKeys,
@@ -499,6 +500,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     qc.invalidateQueries({ queryKey: chatKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: labelKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: propertyKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: issueStatusKeys.all(wsId) });
   }
   // Cross-workspace, so outside the wsId guard: a reconnect may have missed
   // inbox events from any workspace, so re-pull the switcher-dot summary.
@@ -701,7 +703,7 @@ export function useRealtimeSync(
         // here keeps the WS-handler shape uniform; the resulting refetch
         // is cheap.) Both the list (trailing 7d slice) and the detail
         // panel read off this single cache.
-        qc.invalidateQueries({ queryKey: agentActivityKeys.last30d(wsId) });
+        qc.invalidateQueries({ queryKey: agentActivityKeys.last30dAll(wsId) });
         // 30-day run count likewise increments per task lifecycle event.
         qc.invalidateQueries({ queryKey: agentRunCountsKeys.last30d(wsId) });
         // Per-agent task list (Activity tab "Recent work"). Prefix match
@@ -856,6 +858,20 @@ export function useRealtimeSync(
       ws.on(event as "property:created" | "property:updated", () => {
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: propertyKeys.all(wsId) });
+      }),
+    );
+
+    // Status-catalog changes (create / rename / recolor / default / archive).
+    // Issue caches embed status_detail, so a rename or recolor changes how
+    // existing rows render and an archive can move issues to another status —
+    // refetch both trees.
+    const unsubIssueStatusChanged = ["issue_status:created", "issue_status:updated"].map((event) =>
+      ws.on(event as "issue_status:created" | "issue_status:updated", () => {
+        const wsId = getCurrentWsId();
+        if (wsId) {
+          qc.invalidateQueries({ queryKey: issueStatusKeys.all(wsId) });
+          qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+        }
       }),
     );
 
@@ -1370,6 +1386,7 @@ export function useRealtimeSync(
       unsubIssueMetadataChanged();
       unsubIssuePropertiesChanged();
       unsubPropertyChanged.forEach((unsub) => unsub());
+      unsubIssueStatusChanged.forEach((unsub) => unsub());
       unsubInboxNew();
       unsubCommentCreated();
       unsubCommentUpdated();

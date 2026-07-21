@@ -16,12 +16,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
-	"github.com/multica-ai/multica/server/internal/integrations/channel"
-	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -1639,15 +1638,69 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 		}
 		resp.Agent = &TaskAgentData{
-			ID:            uuidToString(agent.ID),
-			Name:          agent.Name,
-			Instructions:  agent.Instructions,
-			CustomEnv:     customEnv,
-			CustomArgs:    customArgs,
-			McpConfig:     mcpConfig,
-			Model:         agent.Model.String,
-			ThinkingLevel: agent.ThinkingLevel.String,
-			RuntimeConfig: runtimeConfig,
+			ID:                    uuidToString(agent.ID),
+			Name:                  agent.Name,
+			Instructions:          agent.Instructions,
+			CustomEnv:             customEnv,
+			CustomArgs:            customArgs,
+			McpConfig:             mcpConfig,
+			Model:                 agent.Model.String,
+			ThinkingLevel:         agent.ThinkingLevel.String,
+			RuntimeConfig:         runtimeConfig,
+			DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
+		}
+		// Fixed repo mode: surface the path the claim transaction locked to this
+		// task so the daemon runs the agent in-place. The lock is created in the
+		// same tx as the dispatch (TaskService.ClaimTask) and reused on reclaim,
+		// so an active lock is expected here; if it's missing we still flag the
+		// mode (daemon fails with a clear "no fixed repo path" error) rather than
+		// silently falling back to a worktree checkout of a large/non-git repo.
+		if agent.FixedRepoEnabled {
+			resp.FixedRepoMode = true
+			resp.FixedRepoVcsType = agent.FixedRepoVcsType
+			resp.FixedRepoCleanupScript = agent.FixedRepoCleanupScript.String
+			lock, lockErr := h.Queries.GetActiveFixedRepoLockByTask(r.Context(), task.ID)
+			switch {
+			case lockErr == nil:
+				resp.FixedRepoPath = lock.Path
+			case errors.Is(lockErr, pgx.ErrNoRows):
+				// Duplicate-claim recovery: the original claim lock is gone
+				// (e.g. released by a stale sweep that then reclaimed the row)
+				// but the agent is still in fixed repo mode. Re-assign a free
+				// path rather than dispatching with no directory. If none is
+				// free, fail the claim so the task stays dispatched for the next
+				// recovery — never a destructive fail/cancel here (design §137).
+				reLock, acqErr := h.Queries.AcquireFixedRepoLock(r.Context(), db.AcquireFixedRepoLockParams{
+					WorkspaceID: agent.WorkspaceID,
+					AgentID:     agent.ID,
+					TaskID:      task.ID,
+					RuntimeID:   task.RuntimeID,
+				})
+				switch {
+				case acqErr == nil:
+					resp.FixedRepoPath = reLock.Path
+					slog.Info("fixed repo: re-assigned path on reclaim",
+						"task_id", uuidToString(task.ID), "path", reLock.Path)
+				case errors.Is(acqErr, pgx.ErrNoRows):
+					return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "no_fixed_repo_path",
+						status:  http.StatusServiceUnavailable,
+						message: "no free fixed repo path to reassign on reclaim",
+					}
+				default:
+					return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "error_fixed_repo_lock",
+						status:  http.StatusInternalServerError,
+						message: "failed to reassign fixed repo path",
+					}
+				}
+			default:
+				return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_fixed_repo_lock",
+					status:  http.StatusInternalServerError,
+					message: "failed to read fixed repo lock",
+				}
+			}
 		}
 		if useSkillRefs {
 			_, skillRefs := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
@@ -2041,39 +2094,21 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					resp.ChatIntro = !hasUser
 				}
 			}
-			// Flag a channel-backed session so the daemon makes the agent aware it
-			// is operating inside an IM conversation and not the Multica web app
-			// (MUL-3871). Empty for a web-only chat session.
-			//
-			// Every registered channel type is probed, not just Slack: a Feishu
-			// session writes the same channel_chat_session_binding row under
-			// channel_type='feishu' (lark/channel_store.go), so the Slack-only
-			// lookup used to report a Feishu chat as web-backed. Downstream that
-			// mis-flag made the brief inject `multica attachment upload` guidance
-			// into a conversation that cannot carry attachments at all (MUL-4899).
-			//
-			// ChatInThread stays Slack-only on purpose. It selects between
-			// `multica chat history` and `multica chat thread`, and those two
-			// endpoints are hardwired to h.SlackHistory (chat_history.go) — there
-			// is no Feishu history reader, so the flag has nothing to select
-			// between on any other channel and must not imply one exists.
-			for _, channelType := range []channel.Type{slack.TypeSlack, channel.TypeFeishu} {
-				binding, berr := h.Queries.GetChannelChatSessionBindingBySession(r.Context(), db.GetChannelChatSessionBindingBySessionParams{
-					ChatSessionID: cs.ID,
-					ChannelType:   string(channelType),
-				})
-				if berr != nil {
-					continue
-				}
-				resp.ChatChannelType = string(channelType)
-				if channelType == slack.TypeSlack {
-					// The latest trigger was a thread reply iff its reply-target
-					// thread (last_thread_id) differs from its own message id (a
-					// top-level @mention records its own ts as both).
-					resp.ChatInThread = binding.LastThreadID.Valid && binding.LastThreadID.String != "" &&
-						binding.LastThreadID.String != binding.LastMessageID.String
-				}
-				break
+			// Flag a channel-backed session so the daemon makes the agent aware
+			// it is operating inside its IM channel (Slack, Lark) — read this
+			// conversation's history from the channel via `multica chat history` /
+			// `multica chat thread`, not from Multica (MUL-3871, MUL-4166). Empty
+			// for a web-only chat session. The binding is looked up by session
+			// alone (chat_session_id is UNIQUE) so any wired channel type lights
+			// up the pull path, not just Slack. ChatInThread tells the agent which
+			// command to start with: the latest trigger was a thread reply iff its
+			// reply-target thread (last_thread_id) differs from its own message id
+			// — for Slack a top-level @mention records its own ts as both; for Lark
+			// last_thread_id is set only inside a topic (话题).
+			if binding, berr := h.Queries.GetChannelChatSessionBindingBySessionAny(r.Context(), cs.ID); berr == nil {
+				resp.ChatChannelType = binding.ChannelType
+				resp.ChatInThread = binding.LastThreadID.Valid && binding.LastThreadID.String != "" &&
+					binding.LastThreadID.String != binding.LastMessageID.String
 			}
 			if ws, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID); err == nil && ws.Repos != nil {
 				var repos []RepoData
@@ -2106,16 +2141,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				}
 			}
 			// Resolve the user-message input batch for this run. A task-owned
-			// direct-chat task (chat_input_task_id set, MUL-4351) reads exactly
-			// the user messages tagged with its own input owner, so a message
-			// that arrived after this turn was sealed can never be absorbed here.
-			// Legacy and channel (Slack/Lark) tasks carry a NULL owner and keep
-			// the trailing-message selector — the run of user messages after the
-			// last assistant row, which also covers a debounced burst (MUL-2968:
-			// "看上海天气" then "还有青岛" must both be delivered) — so a rolling
-			// deploy never replays their history. Attachments are collected per
-			// included message so the agent can `multica attachment download <id>`
-			// (the inline markdown URL is signed + 30-min expiring on the CDN).
+			// task (chat_input_task_id set) reads exactly the user messages
+			// tagged with its own input owner, so a message that arrived after
+			// this turn was sealed can never be absorbed here. Direct-chat
+			// tasks have owned their single message since MUL-4351; channel
+			// (Slack/Lark) tasks now seal their trailing batch at enqueue too.
+			// Only legacy tasks created before that deploy carry a NULL owner
+			// and keep the trailing-message selector — the run of user messages
+			// after the last assistant row, which also covers a debounced burst
+			// (MUL-2968: "看上海天气" then "还有青岛" must both be delivered) —
+			// so a rolling deploy never replays their history. Attachments are
+			// collected per included message so the agent can
+			// `multica attachment download <id>` (the inline markdown URL is
+			// signed + 30-min expiring on the CDN).
 			var unanswered []db.ChatMessage
 			var inputLoadErr error
 			if task.ChatInputTaskID.Valid {
@@ -2644,6 +2682,9 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 // these, not just the latest. Every completed or failed run writes an
 // assistant row, so the anchor advances one turn at a time; the result is the
 // whole slice on the first turn and exactly the new message(s) thereafter.
+// Legacy channel tasks also stop at the first unexpired media marker so an old
+// run cannot consume a placeholder that has not been bound yet. New channel
+// tasks use task-owned input batches and do not depend on this fallback.
 func trailingUserMessages(msgs []db.ChatMessage) []db.ChatMessage {
 	start := 0
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -2652,7 +2693,15 @@ func trailingUserMessages(msgs []db.ChatMessage) []db.ChatMessage {
 			break
 		}
 	}
-	return msgs[start:]
+	msgs = msgs[start:]
+	now := time.Now()
+	for i := range msgs {
+		pending := msgs[i].ChannelMediaPendingUntil
+		if pending.Valid && pending.Time.After(now) {
+			return msgs[:i]
+		}
+	}
+	return msgs
 }
 
 // ListPendingTasksByRuntime returns queued/dispatched tasks for a runtime.
@@ -2845,13 +2894,11 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 
 	h.emitIssueExecutedOnFirstCompletion(r, task)
 
-	// MUL-4195: guarantee at-least-once processing. If a member posted a
-	// deliberate comment while this run was executing (or one was merged into
-	// it after its context was built), schedule a single follow-up so the
-	// input is never silently dropped. Loop-safe: member-authored only, capped
-	// by the existing per-(issue, agent) dedup, and terminating because the
-	// triggering comment always predates the follow-up run's started_at.
-	h.reconcileCommentsOnCompletion(r.Context(), task)
+	// Undelivered-comment reconciliation (MUL-4195 / MUL-4304) now runs inside
+	// TaskService.CompleteTask via the shared ReconcileTerminal seam, so every
+	// terminal transition — including the fail / cancel / sweeper paths that
+	// never reach this handler — replays through one entry point (#5278).
+
 	// The terminal transaction and completion reconciliation are committed.
 	// Wake the owning runtime now so queued work that was blocked by this
 	// task's agent capacity or serialization key is re-claimed immediately.
@@ -2911,6 +2958,18 @@ func (h *Handler) emitIssueExecutedOnFirstCompletion(r *http.Request, task *db.A
 		taskContext.Provider,
 		durationMS,
 	))
+}
+
+// ReconcileTerminalTask is the exported seam TaskService calls after a task
+// leaves the active set on a path that should allow subsequent work (complete /
+// fail / user-cancel / sweeper fail / orphan recovery). It delegates to the
+// handler-local comment routing in reconcileCommentsOnCompletion, which is why
+// the reconciler is injected into TaskService rather than living in the service
+// package (that would invert the handler→service dependency). Wired in
+// handler.New for the request-serving TaskService and in cmd/server for the
+// sweeper's separate instance.
+func (h *Handler) ReconcileTerminalTask(ctx context.Context, task *db.AgentTaskQueue) {
+	h.reconcileCommentsOnCompletion(ctx, task)
 }
 
 // reconcileCommentsOnCompletion closes the at-least-once gap for member
@@ -3045,6 +3104,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		}
 		triggers, _ := h.computeCommentAgentTriggers(ctx, issue, c.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 			ExcludeTriggerCommentID:            c.ID,
+			AuthoringTaskID:                    c.SourceTaskID,
 			OriginatorUserID:                   originatorUserID,
 			AutopilotDelegationAuthorityUserID: delegationAuthority,
 		})
@@ -3757,6 +3817,36 @@ func (h *Handler) ListTaskMessagesByUser(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// GetTaskByUser returns a single agent task's metadata (status, runtime,
+// timings, work dir, attribution) for the caller's workspace. It backs the
+// transcript icon rendered next to agent output anywhere in the app: a surface
+// that only knows a task id (a comment's source_task_id, a chat message's
+// task_id) hydrates the transcript dialog header through this endpoint, then
+// pulls the event stream from the sibling /messages route. Same workspace-scoped
+// access model as ListTaskMessagesByUser.
+func (h *Handler) GetTaskByUser(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+	taskUUID, ok := parseUUIDOrBadRequest(w, taskID, "task_id")
+	if !ok {
+		return
+	}
+
+	task, err := h.Queries.GetAgentTask(r.Context(), taskUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	// Verify the task belongs to the caller's workspace before disclosing it.
+	wsID := h.TaskService.ResolveTaskWorkspaceID(r.Context(), task)
+	if wsID == "" || wsID != middleware.WorkspaceIDFromContext(r.Context()) {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, taskToResponse(task, wsID))
 }
 
 // GetIssueUsage returns aggregated token usage for all tasks belonging to an issue.

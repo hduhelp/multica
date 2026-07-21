@@ -565,10 +565,13 @@ func TestSweepResetsInProgressIssueToTodo(t *testing.T) {
 	}
 }
 
-// TestSweepDoesNotResetIssueAlreadyInReview verifies that the sweeper only resets
-// issues that are truly stuck in in_progress — it must not clobber issues whose
-// agents already moved them forward (e.g. to in_review) before the task timed out.
-func TestSweepDoesNotResetIssueAlreadyInReview(t *testing.T) {
+// TestSweepResetsInReviewIssueLikeInProgress verifies the §4.2 Category-uniform
+// reset: in_review belongs to the in_progress Category, so an in_review issue whose
+// task went stale (no active task) is reset to todo exactly like a literal
+// in_progress issue. This is a deliberate product-decision change from the old
+// token-specific "preserve in_review" carve-out — machine logic keys off Category,
+// not the display token (MUL-4809 §4.2 P1).
+func TestSweepResetsInReviewIssueLikeInProgress(t *testing.T) {
 	if testPool == nil {
 		t.Skip("no database connection")
 	}
@@ -630,14 +633,15 @@ func TestSweepDoesNotResetIssueAlreadyInReview(t *testing.T) {
 
 	broadcastFailedTasks(ctx, queries, nil, bus, failedTasks)
 
-	// Issue should remain in_review — the sweeper must not clobber agent progress.
+	// in_review is an in_progress-Category status, so the stuck issue is reset to
+	// todo just like a literal in_progress issue (MUL-4809 §4.2 P1).
 	var issueStatus string
 	err = testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&issueStatus)
 	if err != nil {
 		t.Fatalf("failed to query issue status: %v", err)
 	}
-	if issueStatus != "in_review" {
-		t.Fatalf("expected issue status 'in_review' to be preserved, got '%s'", issueStatus)
+	if issueStatus != "todo" {
+		t.Fatalf("expected in_review issue to be reset to 'todo', got '%s'", issueStatus)
 	}
 }
 
@@ -822,6 +826,182 @@ func TestExpireStaleQueuedTasksRespectsBatchLimit(t *testing.T) {
 	}
 	if remaining != 3 {
 		t.Fatalf("expected 3 queued tasks remaining after batched sweep, got %d", remaining)
+	}
+}
+
+// TestSweepExpiredHolds verifies that sweepExpiredHolds clears holds whose
+// hold_until has passed and leaves active (future) holds untouched.
+func TestSweepExpiredHolds(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	ctx := context.Background()
+
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT a.runtime_id FROM agent a
+		JOIN member m ON m.workspace_id = a.workspace_id
+		JOIN "user" u ON u.id = m.user_id
+		WHERE u.email = $1
+		LIMIT 1
+	`, integrationTestEmail).Scan(&runtimeID); err != nil {
+		t.Fatalf("failed to find test runtime: %v", err)
+	}
+
+	// Place the runtime on hold well past the 300s release margin so
+	// sweepExpiredHolds should clear it.
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_runtime
+		SET hold_until = now() - interval '10 minutes', hold_reason = 'session_limit'
+		WHERE id = $1
+	`, runtimeID); err != nil {
+		t.Fatalf("set hold: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE agent_runtime SET hold_until = NULL, hold_reason = NULL WHERE id = $1`, runtimeID)
+	})
+
+	// Confirm the hold is set.
+	var holdUntilSet bool
+	if err := testPool.QueryRow(ctx, `SELECT hold_until IS NOT NULL FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&holdUntilSet); err != nil {
+		t.Fatalf("check hold: %v", err)
+	}
+	if !holdUntilSet {
+		t.Fatal("precondition: hold_until should be set before sweep")
+	}
+
+	// Capture runtime:resumed events.
+	bus := events.New()
+	var mu sync.Mutex
+	var resumedEvents []string
+	bus.Subscribe("runtime:resumed", func(e events.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if payload, ok := e.Payload.(map[string]any); ok {
+			if rid, ok := payload["runtime_id"].(string); ok {
+				resumedEvents = append(resumedEvents, rid)
+			}
+		}
+	})
+
+	queries := db.New(testPool)
+	sweepExpiredHolds(ctx, queries, bus)
+
+	// Hold should be cleared.
+	var holdAfter *string
+	if err := testPool.QueryRow(ctx, `SELECT hold_until::text FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&holdAfter); err != nil {
+		t.Fatalf("read hold after sweep: %v", err)
+	}
+	if holdAfter != nil {
+		t.Fatalf("expected hold_until to be NULL after sweep, got %q", *holdAfter)
+	}
+
+	// runtime:resumed event should have been broadcast.
+	mu.Lock()
+	found := false
+	for _, rid := range resumedEvents {
+		if rid == runtimeID {
+			found = true
+			break
+		}
+	}
+	mu.Unlock()
+	if !found {
+		t.Fatalf("expected runtime:resumed event for runtime %q, got events: %v", runtimeID, resumedEvents)
+	}
+}
+
+// TestSweepExpiredHoldsLeavesActiveholdsUntouched verifies that a hold whose
+// hold_until is in the future is not cleared by sweepExpiredHolds.
+func TestSweepExpiredHoldsLeavesActiveholdsUntouched(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	ctx := context.Background()
+
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT a.runtime_id FROM agent a
+		JOIN member m ON m.workspace_id = a.workspace_id
+		JOIN "user" u ON u.id = m.user_id
+		WHERE u.email = $1
+		LIMIT 1
+	`, integrationTestEmail).Scan(&runtimeID); err != nil {
+		t.Fatalf("failed to find test runtime: %v", err)
+	}
+
+	// Place the runtime on hold in the future (1 hour from now).
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_runtime
+		SET hold_until = now() + interval '1 hour', hold_reason = 'session_limit'
+		WHERE id = $1
+	`, runtimeID); err != nil {
+		t.Fatalf("set hold: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE agent_runtime SET hold_until = NULL, hold_reason = NULL WHERE id = $1`, runtimeID)
+	})
+
+	queries := db.New(testPool)
+	sweepExpiredHolds(ctx, queries, nil)
+
+	// Hold should still be set.
+	var holdUntilSet bool
+	if err := testPool.QueryRow(ctx, `SELECT hold_until IS NOT NULL FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&holdUntilSet); err != nil {
+		t.Fatalf("check hold after sweep: %v", err)
+	}
+	if !holdUntilSet {
+		t.Fatal("active hold (future hold_until) must not be cleared by sweepExpiredHolds")
+	}
+}
+
+// TestSweepExpiredHoldsRespectsReleaseMargin verifies that a hold whose
+// hold_until has just passed but is still inside the 300s release margin is
+// NOT cleared. This guards the buffer that keeps a runtime held a little past
+// its stated reset time, since the provider quota is often not lifted on the
+// first run after reset.
+func TestSweepExpiredHoldsRespectsReleaseMargin(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	ctx := context.Background()
+
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT a.runtime_id FROM agent a
+		JOIN member m ON m.workspace_id = a.workspace_id
+		JOIN "user" u ON u.id = m.user_id
+		WHERE u.email = $1
+		LIMIT 1
+	`, integrationTestEmail).Scan(&runtimeID); err != nil {
+		t.Fatalf("failed to find test runtime: %v", err)
+	}
+
+	// hold_until is 2 minutes in the past — expired, but well within the 300s
+	// release margin, so the runtime must stay held.
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_runtime
+		SET hold_until = now() - interval '2 minutes', hold_reason = 'session_limit'
+		WHERE id = $1
+	`, runtimeID); err != nil {
+		t.Fatalf("set hold: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE agent_runtime SET hold_until = NULL, hold_reason = NULL WHERE id = $1`, runtimeID)
+	})
+
+	queries := db.New(testPool)
+	sweepExpiredHolds(ctx, queries, nil)
+
+	var holdUntilSet bool
+	if err := testPool.QueryRow(ctx, `SELECT hold_until IS NOT NULL FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&holdUntilSet); err != nil {
+		t.Fatalf("check hold after sweep: %v", err)
+	}
+	if !holdUntilSet {
+		t.Fatal("hold within the 300s release margin must not be cleared by sweepExpiredHolds")
 	}
 }
 

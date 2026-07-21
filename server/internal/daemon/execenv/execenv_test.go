@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -745,7 +746,7 @@ func TestReuseReclaimsManagedSkillDirWithStrayAgentFile(t *testing.T) {
 func TestReuseSkillRefreshIsCanonicalAcrossProviders(t *testing.T) {
 	t.Parallel()
 
-	for _, provider := range []string{"claude", "codebuddy", "openclaw", "copilot", ""} {
+	for _, provider := range []string{"claude", "codebuddy", "openclaw", "copilot", "qwen", ""} {
 		provider := provider
 		name := provider
 		if name == "" {
@@ -1351,6 +1352,33 @@ func TestWriteContextFilesQoderNativeSkills(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".agent_context", "skills")); !os.IsNotExist(err) {
 		t.Error("expected .agent_context/skills/ to NOT exist for Qoder provider")
+	}
+}
+
+func TestWriteContextFilesQwenNativeSkills(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{
+		IssueID: "qwen-skill-test",
+		AgentSkills: []SkillContextForEnv{
+			{Name: "Go Conventions", Content: "Follow Go conventions."},
+		},
+	}
+
+	if err := writeContextFiles(dir, "qwen", ctx, nil); err != nil {
+		t.Fatalf("writeContextFiles failed: %v", err)
+	}
+
+	skillMd, err := os.ReadFile(filepath.Join(dir, ".qwen", "skills", "go-conventions", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("failed to read .qwen/skills/go-conventions/SKILL.md: %v", err)
+	}
+	if !strings.Contains(string(skillMd), "Follow Go conventions.") {
+		t.Error("SKILL.md missing content")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".agent_context", "skills")); !os.IsNotExist(err) {
+		t.Error("expected .agent_context/skills/ to NOT exist for Qwen provider")
 	}
 }
 
@@ -2113,6 +2141,7 @@ func TestPrepareCodexHomeCopiesRelativeModelCatalog(t *testing.T) {
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(`model_catalog_json = "cc-switch-model-catalog.json"`), 0o644); err != nil {
 		t.Fatalf("write shared config.toml: %v", err)
 	}
@@ -2139,6 +2168,7 @@ func TestPrepareCodexHomeReportsMissingModelCatalogPath(t *testing.T) {
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(`model_catalog_json = "missing-catalog.json"`), 0o644); err != nil {
 		t.Fatalf("write shared config.toml: %v", err)
 	}
@@ -2161,11 +2191,20 @@ func TestPrepareCodexHomeReportsMissingModelCatalogPath(t *testing.T) {
 // parser rejects them with `missing field path`. prepareCodexHome must drop
 // every `[[skills.config]]` entry while copying the user's config.toml so
 // the per-task home stays parseable.
-func TestPrepareCodexHomeStripsSkillsConfigEntries(t *testing.T) {
+func TestPrepareCodexHomeSanitizesMarketplaceAndSkillConfig(t *testing.T) {
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	sharedConfig := `model = "o3"
+
+[marketplaces.claude-plugins-official]
+last_updated = "2026-07-17T03:11:33Z"
+source_type = "git"
+source = "https://github.com/anthropics/claude-plugins-official.git"
+
+[plugins."superpowers@claude-plugins-official"]
+enabled = true
 
 [[skills.config]]
 path = "/Users/x/SKILL.md"
@@ -2180,6 +2219,13 @@ model = "o3"
 `
 	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(sharedConfig), 0o644); err != nil {
 		t.Fatalf("write shared config.toml: %v", err)
+	}
+	pluginSkill := filepath.Join(sharedHome, "plugins", "cache", "claude-plugins-official", "superpowers", "1.0.0", "skills", "brainstorming", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(pluginSkill), 0o755); err != nil {
+		t.Fatalf("create shared plugin cache: %v", err)
+	}
+	if err := os.WriteFile(pluginSkill, []byte("Use when brainstorming."), 0o644); err != nil {
+		t.Fatalf("write shared plugin skill: %v", err)
 	}
 	t.Setenv("CODEX_HOME", sharedHome)
 
@@ -2199,11 +2245,31 @@ model = "o3"
 	if strings.Contains(tomlStr, "superpowers:brainstorming") {
 		t.Errorf("per-task config.toml should not retain plugin skill names, got:\n%s", tomlStr)
 	}
+	if strings.Contains(tomlStr, "[marketplaces.") {
+		t.Errorf("per-task config.toml should not inherit marketplace entries, got:\n%s", tomlStr)
+	}
+	if !strings.Contains(tomlStr, `[plugins."superpowers@claude-plugins-official"]`) {
+		t.Errorf("per-task config.toml should preserve installed plugin registry entries, got:\n%s", tomlStr)
+	}
+	pluginData, err := os.ReadFile(filepath.Join(codexHome, "plugins", "cache", "claude-plugins-official", "superpowers", "1.0.0", "skills", "brainstorming", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("preserved plugin registry must retain access to shared plugin cache: %v", err)
+	}
+	if string(pluginData) != "Use when brainstorming." {
+		t.Errorf("shared plugin cache content = %q", pluginData)
+	}
 	if !strings.Contains(tomlStr, `model = "o3"`) {
 		t.Errorf("top-level keys should be preserved, got:\n%s", tomlStr)
 	}
 	if !strings.Contains(tomlStr, "[profiles.default]") {
 		t.Errorf("unrelated tables should be preserved, got:\n%s", tomlStr)
+	}
+	sharedData, err := os.ReadFile(filepath.Join(sharedHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read shared config.toml: %v", err)
+	}
+	if string(sharedData) != sharedConfig {
+		t.Errorf("shared config.toml must remain unchanged, got:\n%s", sharedData)
 	}
 }
 
@@ -2212,6 +2278,7 @@ func TestPrepareCodexHomeSkipsMissingFiles(t *testing.T) {
 
 	// Empty shared home — no files to seed.
 	sharedHome := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("CODEX_HOME", sharedHome)
 
 	codexHome := filepath.Join(t.TempDir(), "codex-home")
@@ -2321,6 +2388,7 @@ func TestPrepareCodexHome_RefreshesStaleCopiedConfigOnReuse(t *testing.T) {
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	oldConfig := `model_provider = "old-provider"
 
 [model_providers.old-provider]
@@ -2428,6 +2496,7 @@ func TestPrepareCodexHome_DropsCopiedConfigWhenSharedSourceRemoved(t *testing.T)
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	oldConfig := `model_provider = "old-provider"
 
 [model_providers.old-provider]
@@ -2552,6 +2621,78 @@ func TestEnsureCodexSandboxConfigDarwinFallsBack(t *testing.T) {
 	}
 	if strings.Contains(string(s), "[sandbox_workspace_write]") {
 		t.Errorf("should not emit workspace-write section on macOS fallback, got:\n%s", s)
+	}
+}
+
+// TestEnsureCodexSandboxConfigWindowsFallsBack pins MUL-4957: when a Windows
+// user has not opted into a native Codex sandbox, Codex cannot enforce
+// workspace-write and rejects mutation commands (e.g. `multica issue create`)
+// "by policy". The daemon therefore defaults Windows to danger-full-access and
+// emits no workspace-write keys.
+func TestEnsureCodexSandboxConfigWindowsFallsBack(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	// No native sandbox configured → danger-full-access.
+	policy := codexSandboxPolicyForConfig("windows", "0.144.5", windowsSandboxAbsent)
+	if err := ensureCodexSandboxConfig(configPath, policy, "0.144.5", testLogger()); err != nil {
+		t.Fatalf("ensureCodexSandboxConfig failed: %v", err)
+	}
+
+	s, _ := os.ReadFile(configPath)
+	if !strings.Contains(string(s), `sandbox_mode = "danger-full-access"`) {
+		t.Errorf("expected danger-full-access fallback on windows, got:\n%s", s)
+	}
+	if strings.Contains(string(s), "sandbox_workspace_write") {
+		t.Errorf("should not emit any workspace-write keys on windows fallback, got:\n%s", s)
+	}
+}
+
+// TestEnsureCodexSandboxConfigWindowsRespectsUserSandbox pins the MUL-4957
+// must-fix: a Windows user who explicitly opted into a native Codex sandbox
+// (windows.sandbox = "unelevated"|"elevated") must NOT be silently downgraded
+// to danger-full-access. The daemon keeps workspace-write so Codex enforces
+// task isolation with the user's chosen backend, and preserves their
+// windows.sandbox line verbatim.
+func TestEnsureCodexSandboxConfigWindowsRespectsUserSandbox(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"unelevated", "elevated"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.toml")
+
+			userConfig := "model = \"o3\"\n\n[windows]\nsandbox = \"" + mode + "\"\n"
+			if err := os.WriteFile(configPath, []byte(userConfig), 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			winState := resolveWindowsSandboxState(configPath, nil, sharedConfigPresent, nil, testLogger())
+			if winState != windowsSandboxNative {
+				t.Fatalf("resolveWindowsSandboxState = %v, want native", winState)
+			}
+			policy := codexSandboxPolicyForConfig("windows", "0.144.5", winState)
+			if err := ensureCodexSandboxConfig(configPath, policy, "0.144.5", testLogger()); err != nil {
+				t.Fatalf("ensureCodexSandboxConfig failed: %v", err)
+			}
+
+			data, _ := os.ReadFile(configPath)
+			s := string(data)
+			if !strings.Contains(s, `sandbox_mode = "workspace-write"`) {
+				t.Errorf("expected workspace-write kept for user-configured windows.sandbox, got:\n%s", s)
+			}
+			if strings.Contains(s, "danger-full-access") {
+				t.Errorf("must not downgrade a user-configured windows.sandbox to danger-full-access, got:\n%s", s)
+			}
+			if !strings.Contains(s, "network_access = true") {
+				t.Errorf("expected network_access = true under workspace-write, got:\n%s", s)
+			}
+			// The user's explicit opt-in must survive verbatim.
+			if !strings.Contains(s, `sandbox = "`+mode+`"`) {
+				t.Errorf("user windows.sandbox = %q must be preserved, got:\n%s", mode, s)
+			}
+		})
 	}
 }
 
@@ -2752,11 +2893,18 @@ func TestCodexSandboxPolicyFor(t *testing.T) {
 		version  string
 		wantMode string
 		wantNet  bool
+		// wantHint is whether the policy carries an actionable upgrade hint.
+		// Only the macOS seatbelt fallback has one; the Windows compatibility
+		// fallback has no generic upgrade action, so it must not surface a
+		// misleading macOS hint.
+		wantHint bool
 	}{
-		{"linux any version", "linux", "0.100.0", "workspace-write", true},
-		{"linux unknown version", "linux", "", "workspace-write", true},
-		{"darwin old version", "darwin", "0.121.0", "danger-full-access", false},
-		{"darwin unknown version", "darwin", "", "danger-full-access", false},
+		{"linux any version", "linux", "0.100.0", "workspace-write", true, false},
+		{"linux unknown version", "linux", "", "workspace-write", true, false},
+		{"windows any version", "windows", "0.144.5", "danger-full-access", false, false},
+		{"windows unknown version", "windows", "", "danger-full-access", false, false},
+		{"darwin old version", "darwin", "0.121.0", "danger-full-access", false, true},
+		{"darwin unknown version", "darwin", "", "danger-full-access", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2770,8 +2918,219 @@ func TestCodexSandboxPolicyFor(t *testing.T) {
 			if p.Reason == "" {
 				t.Error("expected non-empty Reason")
 			}
+			if (p.Hint != "") != tc.wantHint {
+				t.Errorf("hint present = %v, want %v (hint=%q)", p.Hint != "", tc.wantHint, p.Hint)
+			}
 		})
 	}
+}
+
+// TestCodexSandboxPolicyForConfig maps resolved Windows sandbox states to
+// policies: native and undecidable both keep workspace-write (undecidable fails
+// closed), only absent gets danger-full-access. Linux/darwin ignore winState.
+func TestCodexSandboxPolicyForConfig(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		goos     string
+		winState windowsSandboxConfig
+		wantMode string
+		wantNet  bool
+	}{
+		{"windows native keeps workspace-write", "windows", windowsSandboxNative, "workspace-write", true},
+		{"windows undecidable fails closed", "windows", windowsSandboxUndecidable, "workspace-write", true},
+		{"windows absent falls back", "windows", windowsSandboxAbsent, "danger-full-access", false},
+		// Non-Windows platforms ignore winState entirely.
+		{"linux ignores winState", "linux", windowsSandboxNative, "workspace-write", true},
+		{"darwin ignores winState", "darwin", windowsSandboxNative, "danger-full-access", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := codexSandboxPolicyForConfig(tc.goos, "0.144.5", tc.winState)
+			if p.Mode != tc.wantMode {
+				t.Errorf("mode = %q, want %q", p.Mode, tc.wantMode)
+			}
+			if p.NetworkAccess != tc.wantNet {
+				t.Errorf("network_access = %v, want %v", p.NetworkAccess, tc.wantNet)
+			}
+			if p.Reason == "" {
+				t.Error("expected non-empty Reason")
+			}
+		})
+	}
+}
+
+// TestWindowsSandboxFromConfig verifies config.toml classification: only the
+// exact-lowercase variants Codex accepts are native; any other present value or
+// unparseable TOML is undecidable (fail closed); an absent key is absent.
+func TestWindowsSandboxFromConfig(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		config string
+		want   windowsSandboxConfig
+	}{
+		{"unelevated dotted", `windows.sandbox = "unelevated"`, windowsSandboxNative},
+		{"elevated table", "[windows]\nsandbox = \"elevated\"\n", windowsSandboxNative},
+		{"absent key", `model = "o3"`, windowsSandboxAbsent},
+		{"empty config", "", windowsSandboxAbsent},
+		{"mixed case is invalid to codex", `windows.sandbox = "Unelevated"`, windowsSandboxUndecidable},
+		{"disabled is invalid to codex", `windows.sandbox = "disabled"`, windowsSandboxUndecidable},
+		{"unparseable toml", "this is not = valid toml [[", windowsSandboxUndecidable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := windowsSandboxFromConfig(tc.config); got != tc.want {
+				t.Errorf("windowsSandboxFromConfig(%q) = %v, want %v", tc.config, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWindowsSandboxFromCustomArgs verifies detection of a native sandbox opted
+// into via `-c windows.sandbox=...` args — the second MUL-4957 must-fix, since
+// such args never land in config.toml.
+func TestWindowsSandboxFromCustomArgs(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		args []string
+		want windowsSandboxConfig
+	}{
+		{"two-token bare", []string{"-c", "windows.sandbox=unelevated"}, windowsSandboxNative},
+		{"two-token quoted", []string{"-c", `windows.sandbox="unelevated"`}, windowsSandboxNative},
+		{"two-token spaced", []string{"-c", `windows.sandbox = "elevated"`}, windowsSandboxNative},
+		{"inline -c=", []string{"-c=windows.sandbox=unelevated"}, windowsSandboxNative},
+		{"--config long form", []string{"--config", "windows.sandbox=elevated"}, windowsSandboxNative},
+		{"last occurrence wins", []string{"-c", "windows.sandbox=unelevated", "-c", "windows.sandbox=elevated"}, windowsSandboxNative},
+		{"invalid value undecidable", []string{"-c", "windows.sandbox=disabled"}, windowsSandboxUndecidable},
+		{"unrelated override ignored", []string{"-c", "model=o3"}, windowsSandboxAbsent},
+		{"no args", nil, windowsSandboxAbsent},
+		{"dangling -c ignored", []string{"-c"}, windowsSandboxAbsent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := windowsSandboxFromCustomArgs(tc.args); got != tc.want {
+				t.Errorf("windowsSandboxFromCustomArgs(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveWindowsSandbox verifies the fold precedence: undecidable > native
+// > absent.
+func TestResolveWindowsSandbox(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		states []windowsSandboxConfig
+		want   windowsSandboxConfig
+	}{
+		{"all absent", []windowsSandboxConfig{windowsSandboxAbsent, windowsSandboxAbsent}, windowsSandboxAbsent},
+		{"native in args", []windowsSandboxConfig{windowsSandboxAbsent, windowsSandboxNative}, windowsSandboxNative},
+		{"undecidable beats native", []windowsSandboxConfig{windowsSandboxNative, windowsSandboxUndecidable}, windowsSandboxUndecidable},
+		{"undecidable beats absent", []windowsSandboxConfig{windowsSandboxUndecidable, windowsSandboxAbsent}, windowsSandboxUndecidable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveWindowsSandbox(tc.states...); got != tc.want {
+				t.Errorf("resolveWindowsSandbox(%v) = %v, want %v", tc.states, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStatSharedCodexConfig verifies the shared-config tri-state used to tell a
+// genuinely config-less user from one whose config could not be stat'd.
+func TestStatSharedCodexConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("present", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(`model = "o3"`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := statSharedCodexConfig(dir); got != sharedConfigPresent {
+			t.Errorf("got %v, want present", got)
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		t.Parallel()
+		if got := statSharedCodexConfig(t.TempDir()); got != sharedConfigAbsent {
+			t.Errorf("got %v, want absent", got)
+		}
+	})
+
+	t.Run("empty home is absent", func(t *testing.T) {
+		t.Parallel()
+		if got := statSharedCodexConfig(""); got != sharedConfigAbsent {
+			t.Errorf("got %v, want absent", got)
+		}
+	})
+}
+
+// TestResolveWindowsSandboxStateFailsClosed pins the MUL-4957 fail-closed
+// invariant across every path where the daemon cannot confidently confirm the
+// user configured no native sandbox: a missing per-task copy of an existing (or
+// un-stat'able) shared config, and a failed config sync that leaves a stale
+// copy behind, all keep the restrictive workspace-write policy. Only a
+// genuinely config-less user with no custom-arg opt-in resolves to absent (the
+// one state that earns the danger-full-access compatibility fallback).
+func TestResolveWindowsSandboxStateFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("shared config present but per-task copy missing -> undecidable", func(t *testing.T) {
+		t.Parallel()
+		missing := filepath.Join(t.TempDir(), "config.toml")
+		if got := resolveWindowsSandboxState(missing, nil, sharedConfigPresent, nil, testLogger()); got != windowsSandboxUndecidable {
+			t.Errorf("got %v, want undecidable (fail closed)", got)
+		}
+	})
+
+	t.Run("shared config stat undecidable -> undecidable", func(t *testing.T) {
+		t.Parallel()
+		// The shared source could not be stat'd (permission/IO), so an absent
+		// per-task copy cannot be trusted as "the user has no config".
+		missing := filepath.Join(t.TempDir(), "config.toml")
+		if got := resolveWindowsSandboxState(missing, nil, sharedConfigUndecidable, nil, testLogger()); got != windowsSandboxUndecidable {
+			t.Errorf("got %v, want undecidable (fail closed)", got)
+		}
+	})
+
+	t.Run("config sync error with stale absent-looking copy -> undecidable", func(t *testing.T) {
+		t.Parallel()
+		// A leftover per-task config that reads as "no sandbox" must NOT be
+		// trusted when the sync that should have refreshed it failed — the
+		// reuse-path fail-open Elon's round-3 must-fix 1 called out.
+		dir := t.TempDir()
+		stale := filepath.Join(dir, "config.toml")
+		if err := os.WriteFile(stale, []byte(`model = "o3"`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		syncErr := errors.New("copy failed")
+		if got := resolveWindowsSandboxState(stale, syncErr, sharedConfigPresent, nil, testLogger()); got != windowsSandboxUndecidable {
+			t.Errorf("got %v, want undecidable (fail closed on sync error)", got)
+		}
+	})
+
+	t.Run("no shared config and successful sync -> absent", func(t *testing.T) {
+		t.Parallel()
+		missing := filepath.Join(t.TempDir(), "config.toml")
+		if got := resolveWindowsSandboxState(missing, nil, sharedConfigAbsent, nil, testLogger()); got != windowsSandboxAbsent {
+			t.Errorf("got %v, want absent", got)
+		}
+	})
+
+	t.Run("custom-arg opt-in detected even with no config file", func(t *testing.T) {
+		t.Parallel()
+		missing := filepath.Join(t.TempDir(), "config.toml")
+		args := []string{"-c", "windows.sandbox=unelevated"}
+		if got := resolveWindowsSandboxState(missing, nil, sharedConfigAbsent, args, testLogger()); got != windowsSandboxNative {
+			t.Errorf("got %v, want native", got)
+		}
+	})
 }
 
 func TestPrepareCodexHomeEnsuresNetworkAccess(t *testing.T) {
@@ -2779,6 +3138,7 @@ func TestPrepareCodexHomeEnsuresNetworkAccess(t *testing.T) {
 
 	// Empty shared home — no config.toml to copy.
 	sharedHome := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("CODEX_HOME", sharedHome)
 
 	codexHome := filepath.Join(t.TempDir(), "codex-home")
@@ -2805,6 +3165,7 @@ func TestReuseRestoresCodexHome(t *testing.T) {
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("CODEX_HOME", sharedHome)
 
 	workspacesRoot := t.TempDir()
@@ -2848,6 +3209,7 @@ func TestReuseRestoresCodexHome(t *testing.T) {
 }
 
 func TestReuseRestoresCodexPluginCache(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
@@ -2897,6 +3259,9 @@ func TestReusePreservesTaskLocalModelsCacheWhenSharedMissing(t *testing.T) {
 
 	sharedHome := t.TempDir()
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
@@ -2942,6 +3307,9 @@ func TestReusePreservesTaskLocalModelsCacheOverStaleSharedSnapshot(t *testing.T)
 		t.Fatalf("write shared models cache: %v", err)
 	}
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
@@ -2992,6 +3360,9 @@ func TestReuseInvalidatesTaskLocalModelsCacheWhenProviderConfigChanges(t *testin
 		t.Fatalf("write provider A shared cache: %v", err)
 	}
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
@@ -3074,6 +3445,9 @@ func TestReuseInvalidatesTaskLocalModelsCacheWhenModelCatalogChanges(t *testing.
 		t.Fatalf("write shared cache: %v", err)
 	}
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
@@ -3124,6 +3498,9 @@ func TestReuseInvalidatesUnboundLegacyModelsCache(t *testing.T) {
 		t.Fatalf("write provider config: %v", err)
 	}
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
@@ -3178,6 +3555,7 @@ func TestReuseInvalidatesUnboundLegacyModelsCache(t *testing.T) {
 }
 
 func TestReuseWritesMissingCodexWorkspaceSkills(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
@@ -3232,6 +3610,7 @@ func TestReuseWritesMissingCodexWorkspaceSkills(t *testing.T) {
 }
 
 func TestReuseUpdatesCodexWorkspaceSkills(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
@@ -3295,6 +3674,7 @@ func TestReuseUpdatesCodexWorkspaceSkills(t *testing.T) {
 // inside a Multica task, despite the daemon redirecting CODEX_HOME to a
 // per-task directory.
 func TestPrepareCodexSeedsUserSkills(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
@@ -3337,8 +3717,15 @@ func TestPrepareCodexSeedsUserSkills(t *testing.T) {
 
 	if data, err := os.ReadFile(filepath.Join(env.CodexHome, "skills", "summarize", "SKILL.md")); err != nil {
 		t.Fatalf("user skill SKILL.md not seeded: %v", err)
-	} else if string(data) != "summarize" {
-		t.Errorf("summarize SKILL.md = %q, want %q", data, "summarize")
+	} else {
+		got := string(data)
+		fm := parseFrontmatter(t, got)
+		if name, _ := fm["name"].(string); name != "summarize" {
+			t.Errorf("frontmatter name = %#v, want %q", fm["name"], "summarize")
+		}
+		if !strings.Contains(got, "summarize") {
+			t.Errorf("summarize body was dropped:\n%s", got)
+		}
 	}
 	if data, err := os.ReadFile(filepath.Join(env.CodexHome, "skills", "summarize", "examples", "ex.md")); err != nil {
 		t.Fatalf("user skill support file not seeded: %v", err)
@@ -3347,11 +3734,72 @@ func TestPrepareCodexSeedsUserSkills(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(env.CodexHome, "skills", "translate", "SKILL.md")); err != nil {
 		t.Fatalf("second user skill not seeded: %v", err)
-	} else if string(data) != "translate" {
-		t.Errorf("translate SKILL.md = %q, want %q", data, "translate")
+	} else {
+		fm := parseFrontmatter(t, string(data))
+		if name, _ := fm["name"].(string); name != "translate" {
+			t.Errorf("frontmatter name = %#v, want %q", fm["name"], "translate")
+		}
 	}
 	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", ".DS_Store")); !os.IsNotExist(err) {
 		t.Errorf("ignored dotfile leaked into codex-home/skills: err=%v", err)
+	}
+}
+
+// TestPrepareCodexNormalizesUserSkillFrontmatter covers the WS-1494 failure
+// mode: user-installed Codex skills are copied into the per-task CODEX_HOME.
+// If their SKILL.md lacks YAML frontmatter, Codex logs "missing YAML
+// frontmatter delimited by ---" while loading skills and the task can stall
+// before the daily-report prompt produces any fallback text.
+func TestPrepareCodexNormalizesUserSkillFrontmatter(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+	// Codex file-auth provisioning (KAP-892 / #5484) requires a readable
+	// durable source auth.json in CODEX_HOME before Prepare will set up the
+	// per-task codex home. Seed one so this skill-frontmatter test exercises
+	// the same provisioning path as production.
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
+
+	for _, name := range []string{"koc-publish-registration", "koc-sample-registration"} {
+		dir := filepath.Join(sharedHome, "skills", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("seed user skill dir: %v", err)
+		}
+		body := "# " + name + "\n\nPlain-text guidance without frontmatter.\n"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatalf("seed user SKILL.md: %v", err)
+		}
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-koc-user-skills",
+		TaskID:         "0f1e2d3c-4b5a-6978-90ab-cdef12345678",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task:           TaskContextForEnv{IssueID: "koc-frontmatter-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	for _, name := range []string{"koc-publish-registration", "koc-sample-registration"} {
+		data, err := os.ReadFile(filepath.Join(env.CodexHome, "skills", name, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("seeded %s missing: %v", name, err)
+		}
+		got := string(data)
+		fm := parseFrontmatter(t, got)
+		if fmName, _ := fm["name"].(string); fmName != name {
+			t.Errorf("%s frontmatter name = %#v, want %q", name, fm["name"], name)
+		}
+		if !strings.Contains(got, "Plain-text guidance without frontmatter.") {
+			t.Errorf("%s body was dropped during normalization:\n%s", name, got)
+		}
 	}
 }
 
@@ -3360,6 +3808,7 @@ func TestPrepareCodexSeedsUserSkills(t *testing.T) {
 // skill, the workspace version fully replaces the user version (rather than
 // leaving stale user files lingering).
 func TestPrepareCodexWorkspaceSkillBeatsUserSkillOnConflict(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
@@ -3412,6 +3861,7 @@ func TestPrepareCodexWorkspaceSkillBeatsUserSkillOnConflict(t *testing.T) {
 // when ~/.codex/skills doesn't exist, the seed step is a no-op and Prepare
 // still succeeds.
 func TestPrepareCodexNoUserSkillsDir(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
@@ -3439,6 +3889,7 @@ func TestPrepareCodexNoUserSkillsDir(t *testing.T) {
 // installer directory. The per-task home must end up with a real copy, not
 // a dangling symlink that points outside the task root.
 func TestPrepareCodexResolvesUserSkillSymlinks(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on Windows; covered by Unix path")
 	}
@@ -3488,14 +3939,20 @@ func TestPrepareCodexResolvesUserSkillSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seeded SKILL.md missing: %v", err)
 	}
-	if string(data) != "lark" {
-		t.Errorf("seeded SKILL.md = %q, want %q", data, "lark")
+	got := string(data)
+	fm := parseFrontmatter(t, got)
+	if name, _ := fm["name"].(string); name != "lark-mail" {
+		t.Errorf("frontmatter name = %#v, want %q", fm["name"], "lark-mail")
+	}
+	if !strings.Contains(got, "lark") {
+		t.Errorf("seeded SKILL.md body was dropped:\n%s", got)
 	}
 }
 
 // TestReuseSeedsUserSkillUpdates ensures that user-skill edits between two
 // runs of the same task (the Reuse path) propagate into the per-task home.
 func TestReuseSeedsUserSkillUpdates(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
@@ -3537,8 +3994,13 @@ func TestReuseSeedsUserSkillUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("user skill not refreshed on reuse: %v", err)
 	}
-	if string(data) != "v2" {
-		t.Errorf("after Reuse, user skill content = %q, want %q", data, "v2")
+	got := string(data)
+	fm := parseFrontmatter(t, got)
+	if name, _ := fm["name"].(string); name != "summarize" {
+		t.Errorf("frontmatter name = %#v, want %q", fm["name"], "summarize")
+	}
+	if !strings.Contains(got, "v2") {
+		t.Errorf("after Reuse, user skill body was not refreshed:\n%s", got)
 	}
 }
 
@@ -3548,6 +4010,7 @@ func TestReuseSeedsUserSkillUpdates(t *testing.T) {
 // with a workspace skill `Writing`, the user-version support files must not
 // linger under the workspace skill's directory.
 func TestReuseClearsUserSkillResidueOnWorkspaceConflict(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()
@@ -3609,6 +4072,7 @@ func TestReuseClearsUserSkillResidueOnWorkspaceConflict(t *testing.T) {
 // per-task home on Reuse — otherwise users would still see deleted skills
 // surface to the codex CLI.
 func TestReuseClearsRemovedUserSkill(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()

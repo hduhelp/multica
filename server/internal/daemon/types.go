@@ -138,6 +138,17 @@ type Task struct {
 	// Empty or non-task-scoped values are fatal for writable agent tasks; the
 	// daemon must not fall back to its own token. See MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+	// Fixed repo mode (fixed-repo-mode design): when true, the server has
+	// locked FixedRepoPath (one of the agent's configured fixed_repo_paths) to
+	// this task. The daemon runs the agent directly inside that pre-existing
+	// directory — no clone, no worktree checkout — and rejects
+	// `multica repo checkout`. The path is never GC-managed. FixedRepoVcsType
+	// (git/perforce/none/custom) drives VCS-safety guidance in the brief.
+	// FixedRepoCleanupScript is forwarded but NOT executed by the daemon in v1.
+	FixedRepoMode          bool   `json:"fixed_repo_mode,omitempty"`
+	FixedRepoPath          string `json:"fixed_repo_path,omitempty"`
+	FixedRepoVcsType       string `json:"fixed_repo_vcs_type,omitempty"`
+	FixedRepoCleanupScript string `json:"fixed_repo_cleanup_script,omitempty"`
 }
 
 // ChatAttachmentMeta is the structured attachment metadata the daemon
@@ -166,21 +177,33 @@ type CoalescedCommentData struct {
 
 // AgentData holds agent details returned by the claim endpoint.
 type AgentData struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Instructions  string            `json:"instructions"`
-	Skills        []SkillData       `json:"skills,omitempty"`
-	SkillRefs     []SkillRefData    `json:"skill_refs,omitempty"`
-	CustomEnv     map[string]string `json:"custom_env,omitempty"`
-	CustomArgs    []string          `json:"custom_args,omitempty"`
-	McpConfig     json.RawMessage   `json:"mcp_config,omitempty"`
-	Model         string            `json:"model,omitempty"`
-	ThinkingLevel string            `json:"thinking_level,omitempty"`
+	ID                    string                     `json:"id"`
+	Name                  string                     `json:"name"`
+	Instructions          string                     `json:"instructions"`
+	Skills                []SkillData                `json:"skills,omitempty"`
+	SkillRefs             []SkillRefData             `json:"skill_refs,omitempty"`
+	CustomEnv             map[string]string          `json:"custom_env,omitempty"`
+	CustomArgs            []string                   `json:"custom_args,omitempty"`
+	McpConfig             json.RawMessage            `json:"mcp_config,omitempty"`
+	Model                 string                     `json:"model,omitempty"`
+	ThinkingLevel         string                     `json:"thinking_level,omitempty"`
+	DisabledRuntimeSkills []DisabledRuntimeSkillData `json:"disabled_runtime_skills,omitempty"`
 	// RuntimeConfig is the per-provider runtime_config JSON as stored on
 	// the agent record, forwarded verbatim by the claim endpoint. The
 	// daemon decodes provider-specific fields (e.g. openclaw mode +
 	// gateway endpoint, see issue #3260); other backends ignore it.
 	RuntimeConfig json.RawMessage `json:"runtime_config,omitempty"`
+}
+
+// DisabledRuntimeSkillData is the task-wire identity of one runtime-local
+// skill that must be hidden from this agent's provider process.
+type DisabledRuntimeSkillData struct {
+	RuntimeID string `json:"runtime_id"`
+	Provider  string `json:"provider"`
+	Root      string `json:"root"`
+	Key       string `json:"key"`
+	Name      string `json:"name,omitempty"`
+	Plugin    string `json:"plugin,omitempty"`
 }
 
 // SkillData represents a structured skill for task execution.

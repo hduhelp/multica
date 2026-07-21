@@ -28,8 +28,10 @@ import {
 import {
   classifyAuthProbe,
   isAuthStatusError,
+  reauthTransientMessage,
   type AuthProbeResult,
 } from "./daemon-auth-probe";
+import { legacyDaemonConflict } from "./daemon-start-conflict";
 
 const DEFAULT_HEALTH_PORT = 19514;
 const POLL_INTERVAL_MS = 5_000;
@@ -114,6 +116,19 @@ function profileLogPath(profile: string): string {
 // fresh PAT instead of reusing a token that belongs to a previous user.
 function profileUserIdPath(profile: string): string {
   return join(profileDir(profile), ".desktop-user-id");
+}
+
+function machineDaemonIdPath(): string {
+  return join(homedir(), ".multica", "daemon.id");
+}
+
+async function readMachineDaemonId(): Promise<string | null> {
+  try {
+    const value = (await readFile(machineDaemonIdPath(), "utf-8")).trim();
+    return value || null;
+  } catch {
+    return null;
+  }
 }
 
 async function readProfileUserId(profile: string): Promise<string | null> {
@@ -299,6 +314,18 @@ async function ensureActiveProfile(): Promise<ActiveProfile> {
 
 function invalidateActiveProfile(): void {
   activeProfile = null;
+}
+
+async function setTargetApiUrl(
+  url: string | null,
+  options: { poll: boolean } = { poll: true },
+): Promise<void> {
+  const normalized = url || null;
+  if (targetApiBaseUrl === normalized) return;
+  console.log(`[daemon] target API URL set to ${normalized ?? "(none)"}`);
+  targetApiBaseUrl = normalized;
+  invalidateActiveProfile();
+  if (options.poll) await pollOnce();
 }
 
 async function fetchHealth(): Promise<DaemonStatus> {
@@ -756,10 +783,6 @@ export type ReauthResult =
   | { ok: false; reason: "session_invalid" }
   | { ok: false; reason: "transient"; message: string };
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /**
  * Recover the local daemon from the "auth_expired" state. Drops the stale
  * cached PAT, mints a fresh one from the current session token, and restarts
@@ -774,14 +797,22 @@ function errorMessage(err: unknown): string {
 async function reauthenticate(
   token: string,
   userId: string,
+  apiBaseUrl?: string,
 ): Promise<ReauthResult> {
+  if (apiBaseUrl) {
+    await setTargetApiUrl(apiBaseUrl, { poll: false });
+  }
   try {
     await clearToken();
     // syncToken mints a fresh PAT because clearToken just removed any cache.
     await syncToken(token, userId);
   } catch (err) {
     if (isAuthStatusError(err)) return { ok: false, reason: "session_invalid" };
-    return { ok: false, reason: "transient", message: errorMessage(err) };
+    return {
+      ok: false,
+      reason: "transient",
+      message: reauthTransientMessage(err, targetApiBaseUrl),
+    };
   }
   const restart = await restartDaemon();
   if (!restart.success) {
@@ -831,6 +862,34 @@ async function startDaemon(): Promise<{ success: boolean; error?: string }> {
     // Let polling track it through to "running".
     pollOnce();
     return { success: true };
+  }
+
+  // Migration guard: Desktop moved from the default CLI profile to a named
+  // Desktop-owned profile, which changed the health port and PID file but not
+  // the machine-wide daemon.id. An old default-profile process can therefore
+  // survive an app update and claim the same runtime tasks in parallel. Before
+  // spawning on the new port, confirm whether the default port belongs to this
+  // machine and backend. Refuse startup instead of killing it: the legacy
+  // process may still own active agent work, and automatic termination would
+  // violate the drain guarantee.
+  if (active.name) {
+    const legacyHealth = await fetchHealthAtPort(DEFAULT_HEALTH_PORT);
+    const conflict = legacyDaemonConflict(
+      await readMachineDaemonId(),
+      targetApiBaseUrl,
+      legacyHealth,
+    );
+    if (conflict) {
+      const pid = conflict.pid ? ` (pid ${conflict.pid})` : "";
+      const tasks = conflict.activeTaskCount;
+      return {
+        success: false,
+        error:
+          `Legacy Multica daemon${pid} is still running on port ${DEFAULT_HEALTH_PORT} ` +
+          `for this machine and server (${tasks} active task(s)). ` +
+          "Wait for active tasks to finish, then stop the legacy daemon before retrying.",
+      };
+    }
   }
 
   currentState = "starting";
@@ -1066,13 +1125,7 @@ export function setupDaemonManager(
   getMainWindow = windowGetter;
 
   ipcMain.handle("daemon:set-target-api-url", async (_e, url: string) => {
-    const normalized = url || null;
-    if (targetApiBaseUrl !== normalized) {
-      console.log(`[daemon] target API URL set to ${normalized ?? "(none)"}`);
-      targetApiBaseUrl = normalized;
-      invalidateActiveProfile();
-      await pollOnce();
-    }
+    await setTargetApiUrl(url);
   });
   ipcMain.handle("daemon:start", () => withGuard(() => startDaemon()));
   ipcMain.handle("daemon:stop", () => withGuard(() => stopDaemon()));
@@ -1090,7 +1143,8 @@ export function setupDaemonManager(
   ipcMain.handle("daemon:clear-token", () => clearToken());
   ipcMain.handle(
     "daemon:reauthenticate",
-    (_event, token: string, userId: string) => reauthenticate(token, userId),
+    (_event, token: string, userId: string, apiBaseUrl?: string) =>
+      reauthenticate(token, userId, apiBaseUrl),
   );
   ipcMain.handle("daemon:is-cli-installed", async () => {
     const bin = await resolveCliBinary();

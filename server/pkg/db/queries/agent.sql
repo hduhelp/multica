@@ -12,6 +12,13 @@ ORDER BY created_at ASC;
 SELECT * FROM agent
 WHERE id = $1;
 
+-- name: GetAgentForUpdate :one
+-- Serializes read-modify-write updates to disabled_runtime_skills so two
+-- concurrent per-skill toggles cannot overwrite each other.
+SELECT * FROM agent
+WHERE id = $1
+FOR UPDATE;
+
 -- name: GetAgentInWorkspace :one
 SELECT * FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user';
@@ -21,13 +28,20 @@ INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode,
     runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id,
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
-    composio_toolkit_allowlist, permission_mode
+    composio_toolkit_allowlist, permission_mode,
+    fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script,
+    queued_ttl_seconds
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16,
     sqlc.narg('composio_toolkit_allowlist')::text[],
-    COALESCE(sqlc.narg('permission_mode'), 'private')
+    COALESCE(sqlc.narg('permission_mode'), 'private'),
+    COALESCE(sqlc.narg('fixed_repo_enabled'), false),
+    COALESCE(sqlc.narg('fixed_repo_paths'), '[]'::jsonb),
+    COALESCE(sqlc.narg('fixed_repo_vcs_type'), 'git'),
+    sqlc.narg('fixed_repo_cleanup_script'),
+    sqlc.narg('queued_ttl_seconds')
 )
 RETURNING *;
 
@@ -79,6 +93,11 @@ UPDATE agent SET
     model = COALESCE(sqlc.narg('model'), model),
     thinking_level = COALESCE(sqlc.narg('thinking_level'), thinking_level),
     composio_toolkit_allowlist = COALESCE(sqlc.narg('composio_toolkit_allowlist')::text[], composio_toolkit_allowlist),
+    fixed_repo_enabled = COALESCE(sqlc.narg('fixed_repo_enabled'), fixed_repo_enabled),
+    fixed_repo_paths = COALESCE(sqlc.narg('fixed_repo_paths'), fixed_repo_paths),
+    fixed_repo_vcs_type = COALESCE(sqlc.narg('fixed_repo_vcs_type'), fixed_repo_vcs_type),
+    fixed_repo_cleanup_script = COALESCE(sqlc.narg('fixed_repo_cleanup_script'), fixed_repo_cleanup_script),
+    queued_ttl_seconds = COALESCE(sqlc.narg('queued_ttl_seconds'), queued_ttl_seconds),
     updated_at = now()
 WHERE id = $1
 RETURNING *;
@@ -107,6 +126,16 @@ UPDATE agent SET mcp_config = NULL, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
+-- name: ClearAgentFixedRepoCleanupScript :one
+UPDATE agent SET fixed_repo_cleanup_script = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentQueuedTTLSeconds :one
+UPDATE agent SET queued_ttl_seconds = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
 -- name: UpdateAgentCustomEnv :one
 -- Replaces an agent's custom_env map wholesale. Used by the dedicated
 -- env-management endpoint (POST/PUT /api/agents/{id}/env), which is the
@@ -115,6 +144,12 @@ RETURNING *;
 -- handler's audit-log + **** sentinel guard.
 UPDATE agent
 SET custom_env = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateAgentDisabledRuntimeSkills :one
+UPDATE agent
+SET disabled_runtime_skills = $2, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -194,7 +229,8 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
-    originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id
+    originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
+    dispatched_autopilot_run_id
 )
 VALUES (
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
@@ -218,7 +254,8 @@ VALUES (
     sqlc.narg(rule_version_id),
     sqlc.narg(rerun_of_task_id),
     sqlc.narg(trigger_evidence_kind),
-    sqlc.narg(trigger_evidence_ref_id)
+    sqlc.narg(trigger_evidence_ref_id),
+    sqlc.narg(dispatched_autopilot_run_id)
 )
 RETURNING *;
 
@@ -370,6 +407,12 @@ SELECT
     p.chat_input_task_id, sqlc.narg(fire_at)
 FROM agent_task_queue p
 WHERE p.id = $1
+-- Idempotent under a race between FailTask, the sweeper's HandleFailedTasks, and the
+-- autopilot reconcile back-fill: retry_of_task_id is uniquely constrained
+-- (idx_agent_task_retry_of_task_id_unique), so a second creator conflicts and returns
+-- no row instead of a duplicate attempt. Callers treat ErrNoRows as "successor already
+-- exists" (MUL-4809 §4.1 P0-2).
+ON CONFLICT (retry_of_task_id) WHERE retry_of_task_id IS NOT NULL DO NOTHING
 RETURNING *;
 
 -- name: CancelAgentTasksByIssue :many
@@ -459,6 +502,17 @@ SET status = 'dispatched',
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = $1 AND atq.status = 'queued'
+      AND NOT EXISTS (
+          SELECT 1 FROM agent_runtime ar
+          WHERE ar.id = atq.runtime_id
+            AND ar.hold_until IS NOT NULL
+            -- Stay blocked for the release margin past hold_until: the provider
+            -- quota is often not released on the very first run after the
+            -- stated reset, so we hold dispatch a little longer to absorb clock
+            -- skew. The margin comes from the single holdExpiryMargin source in
+            -- Go, shared with ClearExpiredHolds and runtimeOnHold.
+            AND ar.hold_until > now() - make_interval(secs => @hold_expiry_margin_seconds::double precision)
+      )
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id
@@ -819,12 +873,24 @@ RETURNING *;
 -- the DB when the backlog is large — the sweeper drains the rest on
 -- subsequent ticks.
 WITH victims AS (
-    SELECT id FROM agent_task_queue
-    WHERE status = 'queued'
-      AND created_at < now() - make_interval(secs => @ttl_secs::double precision)
-    ORDER BY created_at ASC
+    SELECT t.id, t.agent_id
+    FROM agent_task_queue t
+    JOIN agent a ON a.id = t.agent_id
+    WHERE t.status = 'queued'
+      AND t.created_at < now() - make_interval(
+        secs => COALESCE(
+            CASE
+                WHEN a.queued_ttl_seconds > 0
+                    AND a.queued_ttl_seconds::text <> 'NaN'
+                    AND a.queued_ttl_seconds NOT IN ('Infinity'::double precision, '-Infinity'::double precision)
+                THEN a.queued_ttl_seconds
+            END,
+            @ttl_secs::double precision
+        )
+      )
+    ORDER BY t.created_at ASC
     LIMIT @max_per_tick::int
-    FOR UPDATE SKIP LOCKED
+    FOR UPDATE OF t SKIP LOCKED
 )
 UPDATE agent_task_queue t
 SET status = 'failed',
@@ -833,9 +899,20 @@ SET status = 'failed',
     failure_reason = 'queued_expired',
     prepare_lease_expires_at = NULL
 FROM victims v
+JOIN agent a ON a.id = v.agent_id
 WHERE t.id = v.id
   AND t.status = 'queued'
-  AND t.created_at < now() - make_interval(secs => @ttl_secs::double precision)
+  AND t.created_at < now() - make_interval(
+    secs => COALESCE(
+        CASE
+            WHEN a.queued_ttl_seconds > 0
+                AND a.queued_ttl_seconds::text <> 'NaN'
+                AND a.queued_ttl_seconds NOT IN ('Infinity'::double precision, '-Infinity'::double precision)
+            THEN a.queued_ttl_seconds
+        END,
+        @ttl_secs::double precision
+    )
+  )
 RETURNING t.*;
 
 -- name: CancelAgentTask :one
@@ -1042,9 +1119,20 @@ ORDER BY priority DESC, created_at ASC;
 -- ClaimAgentTask, wasting CPU and a SELECT every poll cycle when the
 -- runtime is busy on a long-running task. Backed by the partial index
 -- idx_agent_task_queue_claim_candidates so the warm path is cheap.
-SELECT * FROM agent_task_queue
-WHERE runtime_id = $1 AND status = 'queued'
-ORDER BY priority DESC, created_at ASC;
+-- Skips results when the runtime is on hold, including the release margin past
+-- hold_until (see ClearExpiredHolds: the provider quota is often not released
+-- on the first run after the stated reset, so we keep the runtime held a
+-- little longer to absorb clock skew). The margin comes from the single
+-- holdExpiryMargin source in Go, shared with ClearExpiredHolds and ClaimAgentTask.
+SELECT atq.* FROM agent_task_queue atq
+WHERE atq.runtime_id = $1 AND atq.status = 'queued'
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_runtime ar
+      WHERE ar.id = atq.runtime_id
+        AND ar.hold_until IS NOT NULL
+        AND ar.hold_until > now() - make_interval(secs => @hold_expiry_margin_seconds::double precision)
+  )
+ORDER BY atq.priority DESC, atq.created_at ASC;
 
 -- name: PromoteDueDeferredTasksForRuntime :many
 UPDATE agent_task_queue
@@ -1137,18 +1225,26 @@ GROUP BY atq.agent_id;
 -- still in flight has no completed_at and contributes nothing here — that's
 -- correct: in-flight tasks are surfaced via the live presence indicator,
 -- not the historical trend.
+--
+-- Days are cut in the caller-supplied @tz (the viewer's tz, like the
+-- dashboard/runtime usage reports) so every viewer of a workspace sees the
+-- same tasks attributed to the same calendar day. DATE_TRUNC without a zone
+-- would bucket in the session tz and make the sparkline disagree with the
+-- usage charts. @since is the viewer-local start-of-day cutoff computed by
+-- parseSinceParamInTZ; see ListDashboardUsageDaily for why it must not be
+-- re-truncated here.
 SELECT
     atq.agent_id,
-    DATE_TRUNC('day', atq.completed_at)::timestamptz AS bucket,
+    DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text) AS date,
     COUNT(*)::int AS task_count,
     COUNT(*) FILTER (WHERE atq.status = 'failed')::int AS failed_count
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE a.workspace_id = $1
   AND atq.completed_at IS NOT NULL
-  AND atq.completed_at > now() - INTERVAL '30 days'
-GROUP BY atq.agent_id, bucket
-ORDER BY atq.agent_id, bucket;
+  AND atq.completed_at >= sqlc.arg('since')
+GROUP BY atq.agent_id, date
+ORDER BY atq.agent_id, date;
 
 -- name: ListWorkspaceAgentTaskSnapshot :many
 -- Returns the tasks needed to derive each agent's current presence:

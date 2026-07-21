@@ -3,6 +3,8 @@ package execenv
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,10 +16,34 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// Directories to symlink from the shared ~/.codex/ into the per-task CODEX_HOME.
+// The shared directory is created if it doesn't exist, ensuring Codex session
+// logs are always written to the global home where users can find them.
+var codexSymlinkedDirs = []string{
+	"sessions",
+}
+
+// Optional directories to symlink from the shared ~/.codex/ into the per-task
+// CODEX_HOME. Unlike codexSymlinkedDirs, a missing source is NOT created —
+// environments without Codex hooks must not sprout empty hook directories.
+// A missing or non-directory source instead clears any stale per-task residue
+// so a removed ~/.codex/hooks/ does not survive workspace reuse.
+var codexOptionalSymlinkedDirs = []string{
+	"hooks",
+}
+
 // Files to symlink from the shared ~/.codex/ into the per-task CODEX_HOME.
 // Symlinks share state (e.g. auth tokens) so changes propagate automatically.
 var codexSymlinkedFiles = []string{
 	"auth.json",
+}
+
+// Optional files to symlink from the shared ~/.codex/ into the per-task
+// CODEX_HOME. A missing or non-regular source clears any stale per-task
+// copy/link so removed hook configuration does not linger across workspace
+// reuse and get loaded by a later Codex session.
+var codexOptionalSymlinkedFiles = []string{
+	"hooks.json",
 }
 
 // Files to copy from the shared ~/.codex/ into the per-task CODEX_HOME.
@@ -83,6 +109,12 @@ type CodexHomeOptions struct {
 	// Only meaningful when the policy resolves to workspace-write; ignored on
 	// darwin danger-full-access. See task_home.go and MUL-4856.
 	WritableRoots []string
+	// CodexCustomArgs are the effective Codex CLI args this task will launch
+	// with (daemon defaults + profile-fixed + per-agent custom_args). Only the
+	// Windows sandbox decision reads them, to honor a `-c windows.sandbox=...`
+	// override that never lands in config.toml. See resolveWindowsSandboxState
+	// and MUL-4957.
+	CodexCustomArgs []string
 }
 
 // prepareCodexHome is a thin wrapper around prepareCodexHomeWithOpts kept for
@@ -91,6 +123,96 @@ type CodexHomeOptions struct {
 // works correctly.
 func prepareCodexHome(codexHome string, logger *slog.Logger) error {
 	return prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger)
+}
+
+// sharedConfigPresence is the tri-state existence of the shared
+// ~/.codex/config.toml copy source. It is three-valued so a stat that fails for
+// a reason other than "not found" (permission/IO) never masquerades as a
+// confident "the user has no config" — which would let the daemon loosen to
+// danger-full-access on doubt. See resolveWindowsSandboxState (MUL-4957).
+type sharedConfigPresence int
+
+const (
+	// sharedConfigAbsent: the shared config.toml is confidently not present
+	// (os.IsNotExist), so an absent per-task copy is a genuine "unconfigured".
+	sharedConfigAbsent sharedConfigPresence = iota
+	// sharedConfigPresent: the shared config.toml exists.
+	sharedConfigPresent
+	// sharedConfigUndecidable: the stat failed for a reason other than
+	// not-found; the daemon cannot tell whether the user has a config.
+	sharedConfigUndecidable
+)
+
+// statSharedCodexConfig classifies the shared ~/.codex/config.toml (the copy
+// source) into the tri-state above, distinguishing a genuine absence from a
+// stat that could not complete.
+func statSharedCodexConfig(sharedHome string) sharedConfigPresence {
+	if sharedHome == "" {
+		return sharedConfigAbsent
+	}
+	_, err := os.Stat(filepath.Join(sharedHome, "config.toml"))
+	switch {
+	case err == nil:
+		return sharedConfigPresent
+	case os.IsNotExist(err):
+		return sharedConfigAbsent
+	default:
+		return sharedConfigUndecidable
+	}
+}
+
+// resolveWindowsSandboxState determines, for a Windows task, whether a native
+// Codex sandbox is configured — across the per-task config.toml and the
+// effective custom args — failing closed (Undecidable) when it cannot tell.
+//
+// Two signals it does NOT gather itself (the caller does) keep the fail-closed
+// logic unit-testable without faulting the filesystem, and close MUL-4957's
+// round-3 must-fix where a failed sync could be misread as "unconfigured":
+//
+//   - configSyncErr: the error (if any) from syncing the shared config.toml
+//     into this per-task home. Non-nil means the per-task config.toml is
+//     unreliable — stale from a prior run, or never (re)written — so neither its
+//     contents nor its absence reflect the user's intent. Fail closed.
+//   - sharedPresence: whether the shared config.toml source exists. Only a
+//     confident absence lets an absent per-task copy count as genuinely
+//     unconfigured; a present-or-undecidable source whose per-task copy is
+//     missing means the copy silently did not land, so fail closed.
+func resolveWindowsSandboxState(configFile string, configSyncErr error, sharedPresence sharedConfigPresence, customArgs []string, logger *slog.Logger) windowsSandboxConfig {
+	configState := classifyPerTaskWindowsSandbox(configFile, configSyncErr, sharedPresence)
+	state := resolveWindowsSandbox(configState, windowsSandboxFromCustomArgs(customArgs))
+	if state == windowsSandboxUndecidable && logger != nil {
+		logger.Error("codex sandbox: cannot determine Windows native sandbox config; keeping workspace-write and refusing to loosen to danger-full-access",
+			"config_file", configFile)
+	}
+	return state
+}
+
+// classifyPerTaskWindowsSandbox inspects the per-task config.toml given the
+// outcome of syncing it from the shared source, failing closed whenever the
+// file cannot be trusted or read.
+func classifyPerTaskWindowsSandbox(configFile string, configSyncErr error, sharedPresence sharedConfigPresence) windowsSandboxConfig {
+	// A failed shared→per-task sync leaves config.toml stale or missing; neither
+	// its contents nor its absence reflect the user's intent. Fail closed.
+	if configSyncErr != nil {
+		return windowsSandboxUndecidable
+	}
+	data, err := os.ReadFile(configFile)
+	switch {
+	case err == nil:
+		return windowsSandboxFromConfig(string(data))
+	case os.IsNotExist(err):
+		// Sync succeeded and the per-task config is absent. That is a genuine
+		// "no config" only when the shared source is confidently absent too; a
+		// present or undecidable source whose copy is missing means the copy
+		// did not land → fail closed rather than loosen.
+		if sharedPresence == sharedConfigAbsent {
+			return windowsSandboxAbsent
+		}
+		return windowsSandboxUndecidable
+	default:
+		// A read error (permission/IO) on a file the daemon just wrote.
+		return windowsSandboxUndecidable
+	}
 }
 
 // prepareCodexHomeWithOpts creates a per-task CODEX_HOME directory and seeds
@@ -115,12 +237,45 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 		logger.Warn("execenv: codex-home sessions dir prepare failed", "error", err)
 	}
 
+	// Expose optional shared directories (hooks/) only when the source is a
+	// valid directory; otherwise clear stale per-task residue. See
+	// ensureExistingDirSymlink.
+	//
+	// Fail-loud (design ②): propagate any error. ensureExistingDirSymlink
+	// returns nil for the common no-op — shared source absent and nothing stale
+	// to clear — so this does NOT block a task that simply has no hooks. It
+	// returns an error only on a genuine problem: the shared source exists (or
+	// its state can't be verified) but we failed to expose it, OR stale per-task
+	// residue could not be removed. Both must abort task prep: the first would
+	// start a Codex session silently lacking the user's hooks ("false success"),
+	// the second would let a removed hook survive into the session.
+	for _, name := range codexOptionalSymlinkedDirs {
+		src := filepath.Join(sharedHome, name)
+		dst := filepath.Join(codexHome, name)
+		if err := ensureExistingDirSymlink(src, dst); err != nil {
+			return fmt.Errorf("expose codex optional dir %q into per-task home: %w", name, err)
+		}
+	}
+
 	// Symlink shared files (auth).
 	for _, name := range codexSymlinkedFiles {
 		src := filepath.Join(sharedHome, name)
 		dst := filepath.Join(codexHome, name)
 		if err := ensureSymlink(src, dst); err != nil {
-			logger.Warn("execenv: codex-home symlink failed", "file", name, "error", err)
+			return errors.New("provision codex auth file failed")
+		}
+	}
+
+	// Expose optional shared files (hooks.json) only when the source is a
+	// valid regular file; otherwise clear stale per-task residue. See
+	// ensureOptionalFileSymlink. Same fail-loud rule as the optional dirs above
+	// (design ②): nil on the no-hooks no-op, error on a real expose/cleanup
+	// failure.
+	for _, name := range codexOptionalSymlinkedFiles {
+		src := filepath.Join(sharedHome, name)
+		dst := filepath.Join(codexHome, name)
+		if err := ensureOptionalFileSymlink(src, dst); err != nil {
+			return fmt.Errorf("expose codex optional file %q into per-task home: %w", name, err)
 		}
 	}
 
@@ -129,21 +284,34 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	// per-task home is tracking the shared ~/.codex/auth.json or has drifted
 	// into a stale local copy.
 	logCodexAuthState(filepath.Join(codexHome, "auth.json"), logger)
+	if err := validateCodexAuthDestination(sharedHome, filepath.Join(codexHome, "auth.json")); err != nil {
+		return err
+	}
 
-	// Sync isolated files from the shared source.
+	// Sync isolated files from the shared source. Track the config.toml sync
+	// outcome specifically: on Windows a failed sync makes the per-task config
+	// untrustworthy, so the sandbox decision must fail closed rather than read a
+	// stale or absent copy as "unconfigured" and loosen (MUL-4957).
+	var configSyncErr error
 	for _, name := range codexCopiedFiles {
 		src := filepath.Join(sharedHome, name)
 		dst := filepath.Join(codexHome, name)
 		if err := syncCopiedFile(src, dst); err != nil {
 			logger.Warn("execenv: codex-home sync failed", "file", name, "error", err)
+			if name == "config.toml" {
+				configSyncErr = err
+			}
 		}
 	}
-	// Drop `[[skills.config]]` entries inherited from the user's
+	// Drop user-level skill config and marketplace update sources inherited from
 	// ~/.codex/config.toml. Codex Desktop writes plugin-backed skills with a
 	// `name` and no `path`, which the CLI's stricter TOML parser rejects with
-	// `missing field path` and bails out of `thread/start`. Multica writes the
-	// agent's active skills directly to `codex-home/skills/`, so the
-	// user-level registry is redundant here. See codex_skill_strip.go.
+	// `missing field path` and bails out of `thread/start`. Marketplace entries
+	// also trigger redundant git refreshes in every isolated task home. Multica
+	// writes the agent's active skills directly to `codex-home/skills/`. Keep
+	// `[plugins.*]` so installed plugins still load from the exposed shared
+	// plugin cache, but do not let tasks update marketplaces. See
+	// codex_skill_strip.go.
 	if err := sanitizeCopiedCodexConfig(filepath.Join(codexHome, "config.toml")); err != nil {
 		logger.Warn("execenv: codex-home sanitize config failed", "error", err)
 	}
@@ -169,11 +337,20 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	}
 
 	// Write a daemon-managed sandbox block into config.toml. On macOS we may
-	// need to fall back to danger-full-access because of openai/codex#10390;
-	// see codex_sandbox.go for the full rationale.
-	policy := codexSandboxPolicyFor(opts.GOOS, opts.CodexVersion)
+	// need to fall back to danger-full-access because of openai/codex#10390,
+	// and on Windows the daemon defaults to danger-full-access unless the user
+	// opted into a native windows.sandbox; see codex_sandbox.go for the full
+	// rationale. On Windows, resolve the native-sandbox state across the copied
+	// config and the effective custom args so an explicit user opt-in is honored
+	// and an undecidable config fails closed instead of loosening.
+	configFile := filepath.Join(codexHome, "config.toml")
+	winState := windowsSandboxAbsent
+	if resolveGOOS(opts.GOOS) == "windows" {
+		winState = resolveWindowsSandboxState(configFile, configSyncErr, statSharedCodexConfig(sharedHome), opts.CodexCustomArgs, logger)
+	}
+	policy := codexSandboxPolicyForConfig(opts.GOOS, opts.CodexVersion, winState)
 	policy.WritableRoots = opts.WritableRoots
-	if err := ensureCodexSandboxConfig(filepath.Join(codexHome, "config.toml"), policy, opts.CodexVersion, logger); err != nil {
+	if err := ensureCodexSandboxConfig(configFile, policy, opts.CodexVersion, logger); err != nil {
 		logger.Warn("execenv: codex-home ensure sandbox config failed", "error", err)
 	}
 
@@ -193,7 +370,67 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 		logger.Warn("execenv: codex-home ensure memory config failed", "error", err)
 	}
 
+	// Mirror Codex hook trust state LAST, after every other config.toml
+	// mutation (sanitize / sandbox / multi-agent / memory) has settled (design
+	// D4). Codex keys hook trust by the hooks.json *source* path, but the
+	// per-task home loads codex-home/hooks.json — so trust the user accepted
+	// for the shared ~/.codex/hooks.json must be re-keyed onto that per-task
+	// source ID. Running this last means it reads the final config and cannot
+	// be clobbered by, nor clobber, the managed blocks above.
+	//
+	// The shared/task hooks.json paths are derived via codexHooksSourceID so
+	// the re-keyed trust block's source id is byte-identical to what Codex
+	// itself computes (design ①).
+	hookTrustResult, err := syncCodexHookTrustStateWithResult(
+		filepath.Join(sharedHome, "config.toml"),
+		filepath.Join(codexHome, "config.toml"),
+		codexHooksSourceID(sharedHome),
+		codexHooksSourceID(codexHome),
+	)
+	if err != nil {
+		// Fail-loud (design ②): propagate any error. When the shared hooks.json
+		// is absent and there is no stale mapped block to clear, this call
+		// returns nil, so a hookless task is not blocked. It errors only on a
+		// real failure — the user has a shared hooks.json but we could not
+		// re-key its trust (Codex would then silently treat the inherited hook
+		// as untrusted and skip it — a "false success"), or a stale mapped trust
+		// block could not be cleared (it would survive into the session). Both
+		// abort task prep.
+		return fmt.Errorf("mirror codex hook trust state onto per-task home: %w", err)
+	}
+	// Log paths and counts only — never hook contents, tokens, or secrets.
+	logger.Info("execenv: codex-home hook trust sync",
+		"codex_home", codexHome,
+		"shared_hooks", hookTrustResult.SharedHooksCount,
+		"mapped_hooks", hookTrustResult.MappedHooksCount,
+		"stale_hooks", hookTrustResult.StaleHooksCount,
+		"changed", hookTrustResult.Changed)
+
 	return nil
+}
+
+// codexHooksSourceID returns the absolute hooks.json path that Codex uses as the
+// *source id* when keying hook trust state for a hooks.json living directly
+// under a Codex home (codexHome/hooks.json). It must be byte-identical to what
+// Codex itself computes, or a re-keyed trust block will never be found and the
+// inherited hook is silently treated as untrusted.
+//
+// Codex derives that id as AbsolutePathBuf::from_absolute_path(CODEX_HOME/hooks.json)
+// then source_path.display().to_string() (openai/codex
+// codex-rs/hooks/src/engine/discovery.rs + codex-rs/utils/absolute-path).
+// AbsolutePathBuf is *lexically normalized* (`.` / `..` / redundant separators
+// collapsed) but NOT canonicalized: it does not resolve symlinks. filepath.Join
+// applies the same lexical normalization (via filepath.Clean) and likewise does
+// not resolve symlinks, so it mirrors that semantics.
+//
+// CRITICAL — do NOT filepath.EvalSymlinks / otherwise resolve this path. The
+// per-task hooks.json is itself a symlink into the shared ~/.codex/hooks.json;
+// resolving it yields the shared path, which is NOT what Codex keys on, turning
+// a currently-matching key into a guaranteed mismatch (silent untrust). The
+// real-environment test (hook actually executes) is what confirms the key
+// matches; keep this a pure lexical join.
+func codexHooksSourceID(codexHome string) string {
+	return filepath.Join(codexHome, "hooks.json")
 }
 
 // resolveSharedCodexHome returns the path to the user's shared Codex home.
@@ -202,14 +439,84 @@ func resolveSharedCodexHome() string {
 	if v := os.Getenv("CODEX_HOME"); v != "" {
 		abs, err := filepath.Abs(v)
 		if err == nil {
+			if isManagedCodexHome(abs) {
+				return defaultCodexHome()
+			}
 			return abs
 		}
 	}
+	return defaultCodexHome()
+}
+
+func defaultCodexHome() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".codex") // last resort fallback
 	}
 	return filepath.Join(home, ".codex")
+}
+
+func isManagedCodexHome(path string) bool {
+	if filepath.Base(path) != "codex-home" {
+		return false
+	}
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		data, err := os.ReadFile(filepath.Join(dir, TaskContextMarkerRelPath))
+		if err == nil {
+			var marker taskContextMarkerFile
+			return json.Unmarshal(data, &marker) == nil && marker.ManagedBy == TaskContextMarkerManagedBy
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+	}
+}
+
+func isReadableRegularFile(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	return f.Close() == nil
+}
+
+func codexFileAuthRequired(sharedHome string) bool {
+	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(sharedHome, "config.toml"))
+	if err != nil {
+		return true
+	}
+	var cfg struct {
+		ModelProvider  string `toml:"model_provider"`
+		ModelProviders map[string]struct {
+			EnvKey string `toml:"env_key"`
+		} `toml:"model_providers"`
+	}
+	if toml.Unmarshal(data, &cfg) != nil || cfg.ModelProvider == "" {
+		return true
+	}
+	provider, ok := cfg.ModelProviders[cfg.ModelProvider]
+	return !ok || provider.EnvKey == "" || strings.TrimSpace(os.Getenv(provider.EnvKey)) == ""
+}
+
+func validateCodexAuthDestination(sharedHome, destination string) error {
+	if !codexFileAuthRequired(sharedHome) {
+		return nil
+	}
+	if !isReadableRegularFile(filepath.Join(sharedHome, "auth.json")) {
+		return errors.New("codex file authentication requires readable durable source auth.json")
+	}
+	if !isReadableRegularFile(destination) {
+		return errors.New("codex file authentication requires readable provisioned auth.json")
+	}
+	return nil
 }
 
 // codexSessionStateGlobs are the session-derived SQLite state Codex builds
@@ -961,6 +1268,154 @@ func exposeSharedCodexPluginCache(codexHome, sharedHome string) error {
 
 	if err := createDirLink(src, dst); err != nil {
 		return fmt.Errorf("expose shared plugin cache: %w", err)
+	}
+	return nil
+}
+
+// ensureDirSymlink creates a symlink dst → src for a directory.
+// Unlike ensureSymlink, it creates the source directory if it doesn't exist,
+// so Codex can write to it immediately.
+func ensureDirSymlink(src, dst string) error {
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		return fmt.Errorf("create shared dir %s: %w", src, err)
+	}
+
+	// Check if dst already exists.
+	if fi, err := os.Lstat(dst); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(dst)
+			if err == nil && target == src {
+				return nil // already correct
+			}
+			os.Remove(dst)
+		} else {
+			// Regular file/dir exists — don't overwrite.
+			return nil
+		}
+	}
+
+	return createDirLink(src, dst)
+}
+
+// ensureExistingDirSymlink links dst → src only when src is an existing
+// directory. It is the optional-resource counterpart of ensureDirSymlink: the
+// source is NEVER created, and a missing / non-directory / unreadable source
+// clears any stale dst residue (design action 1 + D2/D5).
+//
+//   - src missing (ENOENT):     clear stale dst, no-op.
+//   - src stat non-ENOENT error: clear stale dst, then surface the error
+//     (D2 fail closed — never leave a stale hooks link loadable when we can't
+//     verify the shared source).
+//   - src not a directory:      clear stale dst (type mismatch).
+//   - src is a directory:       keep a correct dst symlink; otherwise drop the
+//     stale dst (via removeOptionalPath, which is junction-safe — D5) and
+//     recreate the link.
+func ensureExistingDirSymlink(src, dst string) error {
+	fi, err := os.Stat(src)
+	if os.IsNotExist(err) {
+		return removeOptionalPath(dst)
+	}
+	if err != nil {
+		// D2: fail closed. Clear any stale dst first so a removed/unreadable
+		// source can never keep an old hook loadable, then surface the error.
+		statErr := fmt.Errorf("stat shared dir %s: %w", src, err)
+		if rmErr := removeOptionalPath(dst); rmErr != nil {
+			return errors.Join(statErr, rmErr)
+		}
+		return statErr
+	}
+	if !fi.IsDir() {
+		return removeOptionalPath(dst)
+	}
+
+	if lfi, err := os.Lstat(dst); err == nil {
+		if lfi.Mode()&os.ModeSymlink != 0 {
+			if target, rlErr := os.Readlink(dst); rlErr == nil && target == src {
+				return nil // already the correct link
+			}
+		}
+		if err := removeOptionalPath(dst); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("lstat optional dir dst %s: %w", dst, err)
+	}
+
+	return createDirLink(src, dst)
+}
+
+// ensureOptionalFileSymlink links/copies dst → src only when src is an existing
+// regular file. Missing / non-regular / unreadable sources clear any stale
+// per-task copy/link so workspace reuse reflects the shared home lifecycle
+// (design action 1 + D2/D5). Same branch semantics as ensureExistingDirSymlink,
+// specialized to a regular file and createFileLink.
+func ensureOptionalFileSymlink(src, dst string) error {
+	fi, err := os.Stat(src)
+	if os.IsNotExist(err) {
+		return removeOptionalPath(dst)
+	}
+	if err != nil {
+		// D2: fail closed — clear stale dst then surface the error.
+		statErr := fmt.Errorf("stat shared file %s: %w", src, err)
+		if rmErr := removeOptionalPath(dst); rmErr != nil {
+			return errors.Join(statErr, rmErr)
+		}
+		return statErr
+	}
+	if !fi.Mode().IsRegular() {
+		return removeOptionalPath(dst)
+	}
+
+	if lfi, err := os.Lstat(dst); err == nil {
+		if lfi.Mode()&os.ModeSymlink != 0 {
+			if target, rlErr := os.Readlink(dst); rlErr == nil && target == src {
+				return nil // already the correct link
+			}
+		}
+		if err := removeOptionalPath(dst); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("lstat optional file dst %s: %w", dst, err)
+	}
+
+	return createFileLink(src, dst)
+}
+
+// removeOptionalPath removes a per-task optional resource (hooks.json or
+// hooks/) without EVER following a symlink or a Windows junction into its
+// shared target (design D5).
+//
+// os.Remove drops a symlink, a Windows junction reparse point, a regular file,
+// or an empty directory in place — it never recurses through a link into the
+// shared ~/.codex/hooks target. os.RemoveAll is reached only as a fallback for
+// a genuine, non-empty real directory; the per-task home never builds a real
+// hooks directory itself, so that branch is purely defensive. This is why we
+// must not blindly os.RemoveAll a non-symlink dst as the reference PR did: on
+// Windows a junction is not always reported as a symlink, and RemoveAll would
+// delete the shared hooks contents through it.
+func removeOptionalPath(path string) error {
+	fi, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lstat optional dst %s: %w", path, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove optional dst link %s: %w", path, err)
+		}
+		return nil
+	}
+	// Regular file, empty dir, or Windows junction: os.Remove handles all of
+	// these in place, deleting the entry (or reparse point) without touching a
+	// link target. Only a non-empty real directory makes os.Remove fail.
+	if err := os.Remove(path); err == nil {
+		return nil
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove optional dst path %s: %w", path, err)
 	}
 	return nil
 }
