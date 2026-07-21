@@ -48,12 +48,23 @@ type Agent struct {
 	ComposioToolkitAllowlist []string `json:"composio_toolkit_allowlist"`
 	// Agent invocation permission mode (MUL-3963). private = owner only; public_to = allow-list in agent_invocation_target. Replaces visibility as the authorization source for triggering runs; visibility is now a derived legacy field. Default private = deny-by-default.
 	PermissionMode         string      `json:"permission_mode"`
+	Kind                   string      `json:"kind"`
+	SystemKey              pgtype.Text `json:"system_key"`
 	FixedRepoEnabled       bool        `json:"fixed_repo_enabled"`
 	FixedRepoPaths         []byte      `json:"fixed_repo_paths"`
 	FixedRepoVcsType       string      `json:"fixed_repo_vcs_type"`
 	FixedRepoCleanupScript pgtype.Text `json:"fixed_repo_cleanup_script"`
-	Kind                   string      `json:"kind"`
-	SystemKey              pgtype.Text `json:"system_key"`
+}
+
+type AgentFixedRepoLock struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	Path        string             `json:"path"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	RuntimeID   pgtype.UUID        `json:"runtime_id"`
+	LockedAt    pgtype.Timestamptz `json:"locked_at"`
+	ReleasedAt  pgtype.Timestamptz `json:"released_at"`
 }
 
 // Allow-list of who may invoke a public_to agent (MUL-3963). One row per (agent, target_type, target); targets stack and canInvokeAgent OR-matches. workspace rows store the agent workspace_id in target_id; member rows store the user id; team rows are reserved and inert in V1. Rows only matter when agent.permission_mode = public_to. No DB foreign keys: agent_id / created_by / member target_id relationships are maintained in the application layer (see migration comment).

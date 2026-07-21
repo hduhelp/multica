@@ -1649,6 +1649,23 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			ThinkingLevel: agent.ThinkingLevel.String,
 			RuntimeConfig: runtimeConfig,
 		}
+		// Fixed repo mode: surface the path the claim transaction locked to this
+		// task so the daemon runs the agent in-place. The lock is created in the
+		// same tx as the dispatch (TaskService.ClaimTask) and reused on reclaim,
+		// so an active lock is expected here; if it's missing we still flag the
+		// mode (daemon fails with a clear "no fixed repo path" error) rather than
+		// silently falling back to a worktree checkout of a large/non-git repo.
+		if agent.FixedRepoEnabled {
+			resp.FixedRepoMode = true
+			resp.FixedRepoVcsType = agent.FixedRepoVcsType
+			resp.FixedRepoCleanupScript = agent.FixedRepoCleanupScript.String
+			if lock, err := h.Queries.GetActiveFixedRepoLockByTask(r.Context(), task.ID); err == nil {
+				resp.FixedRepoPath = lock.Path
+			} else {
+				slog.Warn("fixed repo task has no active path lock at claim response",
+					"task_id", uuidToString(task.ID), "agent_id", uuidToString(agent.ID), "error", err)
+			}
+		}
 		if useSkillRefs {
 			_, skillRefs := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
 			agentSkillCount = len(skillRefs)

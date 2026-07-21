@@ -481,6 +481,16 @@ type AgentTaskResponse struct {
 	// owning user; the daemon must not fall back to its own credential. See
 	// MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+	// Fixed repo mode (fixed-repo-mode design): when the claimed agent runs in
+	// fixed repo mode, the server has locked one of its configured
+	// fixed_repo_paths to this task. The daemon runs the agent directly in
+	// FixedRepoPath instead of cloning/checking out a worktree, and rejects
+	// `multica repo checkout`. FixedRepoCleanupScript is forwarded for v1 but
+	// not executed by the daemon yet. Absent (mode=false) for normal tasks.
+	FixedRepoMode          bool   `json:"fixed_repo_mode,omitempty"`
+	FixedRepoPath          string `json:"fixed_repo_path,omitempty"`
+	FixedRepoVcsType       string `json:"fixed_repo_vcs_type,omitempty"`
+	FixedRepoCleanupScript string `json:"fixed_repo_cleanup_script,omitempty"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
