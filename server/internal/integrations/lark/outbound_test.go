@@ -231,6 +231,10 @@ func TestPatcherSendsSealedChannelTaskReply(t *testing.T) {
 	}
 }
 
+// TestPatcherSendsPlainTextOnChatDone: a finished reply with no markdown goes
+// out as a plain Lark IM text message (msg_type=text) — no card, no title bar —
+// so an ordinary answer reads like a normal message, not a system card. It
+// targets the binding's chat and propagates the installation credentials.
 func TestPatcherSendsPlainTextOnChatDone(t *testing.T) {
 	p, q, api := newTestPatcher(t)
 	taskID := uuidFromString(t, "ee333333-ee33-ee33-ee33-eeeeeeeeeeee")
@@ -242,7 +246,7 @@ func TestPatcherSendsPlainTextOnChatDone(t *testing.T) {
 		Payload: protocol.ChatDonePayload{
 			TaskID:        uuidString(taskID),
 			ChatSessionID: uuidString(q.binding.ChatSessionID),
-			Content:       "Hello! I'm cc, a coding agent…",
+			Content:       "Hello! I'm cc, a coding agent.",
 		},
 	})
 
@@ -252,7 +256,7 @@ func TestPatcherSendsPlainTextOnChatDone(t *testing.T) {
 		t.Fatalf("expected one SendTextMessage call on ChatDone; got %d", len(api.textSent))
 	}
 	got := api.textSent[0]
-	if got.Text != "Hello! I'm cc, a coding agent…" {
+	if got.Text != "Hello! I'm cc, a coding agent." {
 		t.Errorf("text mismatch: got %q", got.Text)
 	}
 	if got.ChatID != ChatID(q.binding.ChannelChatID) {
@@ -261,19 +265,17 @@ func TestPatcherSendsPlainTextOnChatDone(t *testing.T) {
 	if got.InstallationID.AppID != "cli_test_app" {
 		t.Errorf("expected installation app_id propagated; got %q", got.InstallationID.AppID)
 	}
-	if len(api.sent) != 0 || len(api.patched) != 0 {
-		t.Errorf("ChatDone must NOT send / patch any card; got sent=%d patched=%d",
-			len(api.sent), len(api.patched))
+	if len(api.sent) != 0 || len(api.mdCardSent) != 0 || len(api.patched) != 0 {
+		t.Errorf("a plain reply must not send a card; sent=%d md=%d patched=%d",
+			len(api.sent), len(api.mdCardSent), len(api.patched))
 	}
 }
 
-// TestPatcherRoutesMarkdownReplyToCard pins the two-path chat reply:
-// when the agent's body contains markdown syntax, the Patcher MUST
-// route to SendMarkdownCard (schema-2.0 interactive card with a
-// `tag: "markdown"` body element) so Lark renders the formatting
-// instead of leaving raw `**bold**` / `# heading` characters in the
-// transcript. Plain prose continues to go through SendTextMessage.
-func TestPatcherRoutesMarkdownReplyToCard(t *testing.T) {
+// TestPatcherRendersMarkdownReplyInCard: a reply with markdown syntax rides a
+// HEADERLESS schema-2.0 markdown card so Lark renders the formatting rather than
+// leaving raw `**bold**` / `# heading` in the transcript. No title bar and no
+// status header — just the rendered body. Plain prose stays on the text path.
+func TestPatcherRendersMarkdownReplyInCard(t *testing.T) {
 	p, q, api := newTestPatcher(t)
 	taskID := uuidFromString(t, "ee444444-ee44-ee44-ee44-eeeeeeeeeeee")
 
@@ -292,7 +294,7 @@ func TestPatcherRoutesMarkdownReplyToCard(t *testing.T) {
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	if len(api.mdCardSent) != 1 {
-		t.Fatalf("expected one SendMarkdownCard call; got %d", len(api.mdCardSent))
+		t.Fatalf("expected one markdown card send; got %d", len(api.mdCardSent))
 	}
 	got := api.mdCardSent[0]
 	if got.Markdown != body {
@@ -301,18 +303,16 @@ func TestPatcherRoutesMarkdownReplyToCard(t *testing.T) {
 	if got.ChatID != ChatID(q.binding.ChannelChatID) {
 		t.Errorf("chat_id mismatch: got %q want %q", got.ChatID, q.binding.ChannelChatID)
 	}
-	if len(api.textSent) != 0 {
-		t.Errorf("markdown body must NOT also fire SendTextMessage; got %d", len(api.textSent))
-	}
-	if len(api.sent) != 0 || len(api.patched) != 0 {
-		t.Errorf("ChatDone must NOT use legacy card paths; sent=%d patched=%d", len(api.sent), len(api.patched))
+	if len(api.textSent) != 0 || len(api.sent) != 0 {
+		t.Errorf("markdown reply must not fire text/interactive paths; text=%d sent=%d",
+			len(api.textSent), len(api.sent))
 	}
 }
 
-// TestPatcherRoutesPlainReplyToText is the inverse: a short prose
-// reply without any markdown syntax should stay on the cheap
-// msg_type=text path so the user sees a normal IM bubble.
-func TestPatcherRoutesPlainReplyToText(t *testing.T) {
+// TestPatcherSendsPlainReplyAsText: a short prose reply without markdown stays
+// on the cheap msg_type=text path so the user sees a normal IM bubble — no
+// card, no title.
+func TestPatcherSendsPlainReplyAsText(t *testing.T) {
 	p, q, api := newTestPatcher(t)
 	taskID := uuidFromString(t, "ee555555-ee55-ee55-ee55-eeeeeeeeeeee")
 
@@ -329,11 +329,11 @@ func TestPatcherRoutesPlainReplyToText(t *testing.T) {
 
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if len(api.textSent) != 1 {
-		t.Fatalf("plain prose must take the text path; got %d text sends", len(api.textSent))
+	if len(api.textSent) != 1 || api.textSent[0].Text != "Sure, on it." {
+		t.Fatalf("plain prose must take the text path; textSent=%+v", api.textSent)
 	}
-	if len(api.mdCardSent) != 0 {
-		t.Errorf("plain prose must NOT wrap in a markdown card; got %d card sends", len(api.mdCardSent))
+	if len(api.mdCardSent) != 0 || len(api.sent) != 0 {
+		t.Errorf("plain prose must not wrap in a card; md=%d sent=%d", len(api.mdCardSent), len(api.sent))
 	}
 }
 
@@ -535,7 +535,7 @@ func TestPatcherIgnoresEventTaskCompletedForChatTasks(t *testing.T) {
 		t.Errorf("text content mismatch; got %q", api.textSent[0].Text)
 	}
 	if len(api.sent) != 0 || len(api.patched) != 0 {
-		t.Errorf("no card outbound expected on the success path; got sent=%d patched=%d",
+		t.Errorf("no duplicate/card outbound expected on the success path; got sent=%d patched=%d",
 			len(api.sent), len(api.patched))
 	}
 }
@@ -560,6 +560,9 @@ func TestDefaultRendererConfigCarriesUpdateMulti(t *testing.T) {
 			if err := json.Unmarshal([]byte(out.JSON), &doc); err != nil {
 				t.Fatalf("decode card json: %v", err)
 			}
+			if s, _ := doc["schema"].(string); s != "2.0" {
+				t.Errorf("card must be schema 2.0; got %q", s)
+			}
 			cfg, ok := doc["config"].(map[string]any)
 			if !ok {
 				t.Fatalf("missing config block: %v", doc)
@@ -567,10 +570,56 @@ func TestDefaultRendererConfigCarriesUpdateMulti(t *testing.T) {
 			if v, _ := cfg["update_multi"].(bool); !v {
 				t.Errorf("config.update_multi must be true so subsequent patches apply; got %v", cfg)
 			}
-			if v, _ := cfg["wide_screen_mode"].(bool); !v {
-				t.Errorf("config.wide_screen_mode regression: %v", cfg)
+			if v, _ := cfg["width_mode"].(string); v != "fill" {
+				t.Errorf("config.width_mode must be fill for the schema-2.0 card; got %v", cfg)
 			}
 		})
+	}
+}
+
+// TestAgentReplyCardHeaderPolicy pins the reviewer-requested chrome rules: an
+// ordinary successful reply card is headerless (no title bar), while a failure
+// card keeps a red status header — and the header never carries the reply body
+// in a subtitle, which would make Lark truncate it to an ellipsized line.
+func TestAgentReplyCardHeaderPolicy(t *testing.T) {
+	r := NewDefaultRenderer()
+
+	final, err := r.Render(RenderInput{Kind: CardKindFinal, AgentName: "cc", Content: "here is the answer"})
+	if err != nil {
+		t.Fatalf("render final: %v", err)
+	}
+	var fd map[string]any
+	if err := json.Unmarshal([]byte(final.JSON), &fd); err != nil {
+		t.Fatalf("decode final card: %v", err)
+	}
+	if _, hasHeader := fd["header"]; hasHeader {
+		t.Errorf("a successful reply card must be headerless; got header %v", fd["header"])
+	}
+
+	errCard, err := r.Render(RenderInput{Kind: CardKindError, AgentName: "cc", ErrorMessage: "boom"})
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	var ed map[string]any
+	if err := json.Unmarshal([]byte(errCard.JSON), &ed); err != nil {
+		t.Fatalf("decode error card: %v", err)
+	}
+	hdr, ok := ed["header"].(map[string]any)
+	if !ok {
+		t.Fatalf("an error card must carry a status header; got %v", ed)
+	}
+	if hdr["template"] != "red" {
+		t.Errorf("error header must be red; got %v", hdr["template"])
+	}
+	if _, hasSubtitle := hdr["subtitle"]; hasSubtitle {
+		t.Errorf("header must not carry a subtitle (truncation bug); got %v", hdr)
+	}
+	title, _ := hdr["title"].(map[string]any)
+	if tc, _ := title["content"].(string); tc != "cc" {
+		t.Errorf("error header title should be the agent name, not the reply body; got %q", tc)
+	}
+	if !strings.Contains(errCard.JSON, "boom") {
+		t.Errorf("the error detail must live in the card body; got %q", errCard.JSON)
 	}
 }
 
@@ -662,14 +711,14 @@ func TestPatcherLegacyBindingFallsBackToKey(t *testing.T) {
 	}
 }
 
-// TestPatcherSendsToChatWhenNoThread verifies that a non-thread trigger
-// (no last_lark_thread_id on the binding) keeps the historical
-// chat-level send: ReplyTarget stays empty so SendTextMessage targets
-// the chat by chat_id. This is the no-behavior-change guarantee for
-// normal group / p2p chats.
-func TestPatcherSendsToChatWhenNoThread(t *testing.T) {
+// TestPatcherThreadsOffLatestMessageWithoutTopic pins the happyclaw-parity
+// routing: even a normal group / p2p trigger that never entered a Lark topic
+// (last_lark_thread_id empty) now replies off the latest inbound message with
+// reply_in_thread, so the reply quotes the user and opens a 话题 instead of
+// dropping a loose chat-level message.
+func TestPatcherThreadsOffLatestMessageWithoutTopic(t *testing.T) {
 	p, q, api := newTestPatcher(t)
-	// binding has a message id but NO thread id → must not thread.
+	// binding has a message id but NO thread id → still threads off the message.
 	q.binding.LastMessageID = pgtype.Text{String: "om_trigger", Valid: true}
 	taskID := uuidFromString(t, "ee777777-ee77-ee77-ee77-eeeeeeeeeeee")
 
@@ -685,14 +734,42 @@ func TestPatcherSendsToChatWhenNoThread(t *testing.T) {
 	if len(api.textSent) != 1 {
 		t.Fatalf("expected one text send; got %d", len(api.textSent))
 	}
+	got := api.textSent[0].ReplyTarget
+	if got.MessageID != "om_trigger" || !got.InThread {
+		t.Errorf("group reply must thread off the latest message {om_trigger, InThread:true}; got %+v", got)
+	}
+}
+
+// TestPatcherCreatesFreshMessageWithoutTrigger pins the third routing scenario:
+// a session with no recorded inbound trigger (no last_lark_message_id) has
+// nothing to reply to, so the send falls through to a chat-level create
+// (empty ReplyTarget).
+func TestPatcherCreatesFreshMessageWithoutTrigger(t *testing.T) {
+	p, q, api := newTestPatcher(t)
+	// default binding has no LastMessageID → create, not reply.
+	taskID := uuidFromString(t, "ee707070-ee70-ee70-ee70-eeeeeeeeeeee")
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload:       protocol.ChatDonePayload{Content: "fresh reply"},
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 1 {
+		t.Fatalf("expected one text send; got %d", len(api.textSent))
+	}
 	if api.textSent[0].ReplyTarget.IsSet() {
-		t.Errorf("non-thread trigger must NOT route through the reply endpoint; got %+v",
+		t.Errorf("no recorded trigger must create a fresh message (empty ReplyTarget); got %+v",
 			api.textSent[0].ReplyTarget)
 	}
 }
 
-// TestPatcherThreadReplyMarkdownRoutesToThread verifies the markdown
-// card path also threads when the trigger was in a topic.
+// TestPatcherThreadReplyMarkdownRoutesToThread verifies a markdown reply also
+// threads when the trigger was in a topic — the markdown rides the rich card's
+// body and the card is routed through the reply endpoint.
 func TestPatcherThreadReplyMarkdownRoutesToThread(t *testing.T) {
 	p, q, api := newTestPatcher(t)
 	q.binding.LastMessageID = pgtype.Text{String: "om_trigger", Valid: true}
@@ -713,7 +790,7 @@ func TestPatcherThreadReplyMarkdownRoutesToThread(t *testing.T) {
 	}
 	got := api.mdCardSent[0].ReplyTarget
 	if got.MessageID != "om_trigger" || !got.InThread {
-		t.Errorf("expected markdown thread reply target {om_trigger, InThread:true}; got %+v", got)
+		t.Errorf("expected thread reply target {om_trigger, InThread:true}; got %+v", got)
 	}
 }
 
