@@ -5301,3 +5301,65 @@ func TestEnvironmentCleanupStandardModeRemovesWorkdir(t *testing.T) {
 		t.Fatalf("output/ removed by partial cleanup: %v", err)
 	}
 }
+
+// TestPrepareCodexHomeFailsClosedWhenSandboxWriteFails pins MUL-4957: the
+// computed fail-closed sandbox policy must not stay only in memory. If the
+// managed block cannot be rewritten on a reused home holding a stale
+// danger-full-access, prepareCodexHomeWithOpts must return an error rather than
+// let the task launch with an unenforced sandbox.
+func TestPrepareCodexHomeFailsClosedWhenSandboxWriteFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses the read-only permissions this test relies on")
+	}
+	// Cannot use t.Parallel() with t.Setenv.
+
+	// Bypass this fork's file-auth gate (validateCodexAuthDestination) so the
+	// prepare flow reaches the sandbox-config write this test is exercising,
+	// rather than failing closed earlier on a missing durable auth.json.
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	// Shared home the user has since pointed at a native Windows sandbox.
+	sharedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte("windows.sandbox = \"unelevated\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	// Reused per-task home still holding the prior run's danger-full-access.
+	codexHome := t.TempDir()
+	configPath := filepath.Join(codexHome, "config.toml")
+	stale := multicaManagedBeginMarker + "\nsandbox_mode = \"danger-full-access\"\n" + multicaManagedEndMarker + "\n"
+	if err := os.WriteFile(configPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Read-only file + directory: the sync cannot replace the stale copy and
+	// the managed block cannot be rewritten.
+	if err := os.Chmod(configPath, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(codexHome, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	// Restore before t.TempDir's own cleanup so removal succeeds (LIFO).
+	t.Cleanup(func() {
+		_ = os.Chmod(codexHome, 0o755)
+		_ = os.Chmod(configPath, 0o644)
+	})
+
+	err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "windows", CodexVersion: "0.144.5"}, testLogger())
+	if err == nil {
+		t.Fatal("expected prepareCodexHomeWithOpts to fail closed when the sandbox block cannot be written, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox config") {
+		t.Errorf("expected a sandbox-config error, got: %v", err)
+	}
+	// The stale danger-full-access is still on disk — proving the task would
+	// have launched unsandboxed had prepare reported success.
+	data, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+	if !strings.Contains(string(data), `sandbox_mode = "danger-full-access"`) {
+		t.Fatalf("expected the stale danger-full-access to remain (write failed), got:\n%s", data)
+	}
+}
