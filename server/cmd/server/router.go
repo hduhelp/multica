@@ -1292,6 +1292,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// `runtime_has_active_agents` and the user confirmed the
 					// cascade plan.
 					r.Post("/archive-agents-and-delete", h.ArchiveAgentsAndDeleteRuntime)
+					r.Post("/resume", h.ResumeRuntime)
 				})
 			})
 
