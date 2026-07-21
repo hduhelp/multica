@@ -59,6 +59,20 @@ type TaskService struct {
 	// succeeds; the concrete type is *composio.Service.
 	Composio ComposioOverlayBuilder
 
+	// ReconcileTerminal replays comment triggers a run did NOT deliver, once
+	// the task has freshly left the active set through a path that should allow
+	// subsequent work (complete / fail / user-cancel / sweeper fail / orphan
+	// recovery). The comment-routing logic lives in the handler layer, so this
+	// is an injected seam (like Composio / Wakeup): the handler wires it to its
+	// reconcileCommentsOnCompletion in New, and main.go wires the sweeper's
+	// TaskService to the same method. Nil is valid and disables replay — and it
+	// is deliberately left nil on the bulk-cleanup paths (issue delete,
+	// comment edit/delete re-routing, agent "cancel all") which must NOT enqueue
+	// replacement work. The callee is itself a no-op for tasks without a valid
+	// issue / agent / creation timestamp, and loop-safe (created_at anchor +
+	// delivered-set exclusion), so double invocation cannot duplicate a run.
+	ReconcileTerminal TerminalTaskReconciler
+
 	analyticsContextMu    sync.Mutex
 	analyticsContextCache map[string]analytics.TaskContext
 	analyticsContextOrder []string
@@ -87,6 +101,23 @@ type ComposioOverlayBuilder interface {
 
 type TaskWakeupNotifier interface {
 	NotifyTaskAvailable(runtimeID, taskID string)
+}
+
+// TerminalTaskReconciler replays any comment triggers a task did NOT deliver
+// after it leaves the active set on a path that should allow subsequent work.
+// It is the single shared post-terminal entry point the handler and the
+// background/sweeper paths both funnel through (see TaskService.ReconcileTerminal).
+type TerminalTaskReconciler func(ctx context.Context, task *db.AgentTaskQueue)
+
+// reconcileTerminal invokes the injected post-terminal reconciler when one is
+// wired. It is called only after a successful terminal transition and, on the
+// fail paths, only after the auto-retry child has been created — so an
+// undelivered comment merges into that queued retry instead of spawning a
+// duplicate run.
+func (s *TaskService) reconcileTerminal(ctx context.Context, task *db.AgentTaskQueue) {
+	if s.ReconcileTerminal != nil {
+		s.ReconcileTerminal(ctx, task)
+	}
 }
 
 // triggerSummaryMaxLen caps the snapshot length so the row stays cheap to
@@ -1891,6 +1922,14 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
 	s.NotifyTaskFinished(task)
 
+	// A single-task cancel is terminal with no auto-retry, so replay any comment
+	// deferred while this run held the active slot. Reached only after a real
+	// cancel (an already-finalized task returned early above), and a no-op for
+	// chat-only tasks (no issue). The bulk cancels — issue delete, comment
+	// edit/delete re-routing, agent "cancel all" — deliberately bypass this
+	// method and its reconcile, so an explicit stop never enqueues replacement work.
+	s.reconcileTerminal(ctx, &task)
+
 	return &CancelTaskResult{
 		Task:                 task,
 		CancelledChatMessage: cancelledChatMessage,
@@ -2945,6 +2984,11 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// Broadcast
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCompleted, task)
 
+	// Replay any comment that landed while this run was busy and was deferred to
+	// completion-time reconciliation (MUL-4195 / MUL-4304). Shared with the fail
+	// / cancel terminal paths via the injected reconciler.
+	s.reconcileTerminal(ctx, &task)
+
 	return &task, nil
 }
 
@@ -3326,6 +3370,14 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 
 	// Broadcast
 	s.broadcastTaskEvent(ctx, protocol.EventTaskFailed, task)
+
+	// Replay any comment dropped while this run was in flight. The auto-retry
+	// child (if any) was already created inside the transaction above, so an
+	// undelivered comment merges into that queued child rather than spawning a
+	// duplicate run; with no retry it earns a single fresh follow-up. Runs only
+	// on this success path — an idempotent re-callback returned early above and
+	// never reaches here.
+	s.reconcileTerminal(ctx, &task)
 
 	return &task, nil
 }
@@ -3860,6 +3912,13 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 				retriedIssues[util.UUIDToString(t.IssueID)] = true
 			}
 		}
+
+		// Replay any comment deferred while this now-failed run held the active
+		// slot — the sweeper / offline-runtime / orphan-recovery paths reach the
+		// same #5278 gap as the HTTP fail callback. Ordered after the retry above
+		// so an undelivered comment merges into the queued retry child instead of
+		// duplicating it; with no retry it earns one fresh follow-up.
+		s.reconcileTerminal(ctx, &t)
 
 		failureReason := "agent_error"
 		if t.FailureReason.Valid && t.FailureReason.String != "" {

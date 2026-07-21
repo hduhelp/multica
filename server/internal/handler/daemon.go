@@ -2900,13 +2900,11 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 
 	h.emitIssueExecutedOnFirstCompletion(r, task)
 
-	// MUL-4195: guarantee at-least-once processing. If a member posted a
-	// deliberate comment while this run was executing (or one was merged into
-	// it after its context was built), schedule a single follow-up so the
-	// input is never silently dropped. Loop-safe: member-authored only, capped
-	// by the existing per-(issue, agent) dedup, and terminating because the
-	// triggering comment always predates the follow-up run's started_at.
-	h.reconcileCommentsOnCompletion(r.Context(), task)
+	// Undelivered-comment reconciliation (MUL-4195 / MUL-4304) now runs inside
+	// TaskService.CompleteTask via the shared ReconcileTerminal seam, so every
+	// terminal transition — including the fail / cancel / sweeper paths that
+	// never reach this handler — replays through one entry point (#5278).
+
 	// The terminal transaction and completion reconciliation are committed.
 	// Wake the owning runtime now so queued work that was blocked by this
 	// task's agent capacity or serialization key is re-claimed immediately.
@@ -2966,6 +2964,18 @@ func (h *Handler) emitIssueExecutedOnFirstCompletion(r *http.Request, task *db.A
 		taskContext.Provider,
 		durationMS,
 	))
+}
+
+// ReconcileTerminalTask is the exported seam TaskService calls after a task
+// leaves the active set on a path that should allow subsequent work (complete /
+// fail / user-cancel / sweeper fail / orphan recovery). It delegates to the
+// handler-local comment routing in reconcileCommentsOnCompletion, which is why
+// the reconciler is injected into TaskService rather than living in the service
+// package (that would invert the handler→service dependency). Wired in
+// handler.New for the request-serving TaskService and in cmd/server for the
+// sweeper's separate instance.
+func (h *Handler) ReconcileTerminalTask(ctx context.Context, task *db.AgentTaskQueue) {
+	h.reconcileCommentsOnCompletion(ctx, task)
 }
 
 // reconcileCommentsOnCompletion closes the at-least-once gap for member

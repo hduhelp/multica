@@ -409,6 +409,12 @@ func main() {
 	taskSvc := service.NewTaskService(queries, pool, hub, bus, daemonWakeup)
 	taskSvc.Analytics = analyticsClient
 	taskSvc.Metrics = businessMetrics
+	// This background TaskService is a separate instance from the one the HTTP
+	// handler builds, so wire it to the same post-terminal comment reconciler:
+	// the runtime/stale sweepers and orphan recovery fail tasks through it, and
+	// must replay a comment deferred while the run was active just like the
+	// request-path fail/cancel do (#5278).
+	taskSvc.ReconcileTerminal = h.ReconcileTerminalTask
 	autopilotSvc := service.NewAutopilotService(queries, pool, bus, taskSvc)
 	// The background task-terminal / issue listeners consult the two-phase rollout
 	// gate (MUL-4809 §4.1 P0-3); without this they would default to legacy mode.
