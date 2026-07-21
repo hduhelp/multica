@@ -233,6 +233,7 @@
     "model_empty_with_dot": "利用可能なモデルがありません。",
     "model_custom_tooltip": "\"{{value}}\" をカスタムモデル ID として使用",
     "model_custom_use": "\"{{value}}\" を使用",
+    "model_custom_hint": "ランタイムがサポートする任意のモデル ID を入力",
     "model_clear": "クリア（プロバイダーのデフォルトを使用）",
     "model_clear_title": "選択をクリアし、ランタイムのプロバイダーのデフォルトに戻します",
     "wait_timeout_global": "グローバル",
