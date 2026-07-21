@@ -21,6 +21,12 @@ import (
 func TestPrepareIsolated_PermanentFIFOBlockThenImmediateRetry(t *testing.T) {
 	sharedCodexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", sharedCodexHome)
+	// Codex auth provisioning (#5484) requires a readable durable auth.json
+	// before Prepare reaches the config-copy step; seed one so this test still
+	// exercises the config.json FIFO block it is about (not the auth guard).
+	if err := os.WriteFile(filepath.Join(sharedCodexHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 	fifo := filepath.Join(sharedCodexHome, "config.json")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatalf("create config FIFO: %v", err)

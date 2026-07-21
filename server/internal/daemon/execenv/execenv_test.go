@@ -3259,6 +3259,9 @@ func TestReusePreservesTaskLocalModelsCacheWhenSharedMissing(t *testing.T) {
 
 	sharedHome := t.TempDir()
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
@@ -3304,6 +3307,9 @@ func TestReusePreservesTaskLocalModelsCacheOverStaleSharedSnapshot(t *testing.T)
 		t.Fatalf("write shared models cache: %v", err)
 	}
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
@@ -3354,6 +3360,9 @@ func TestReuseInvalidatesTaskLocalModelsCacheWhenProviderConfigChanges(t *testin
 		t.Fatalf("write provider A shared cache: %v", err)
 	}
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
@@ -3436,6 +3445,9 @@ func TestReuseInvalidatesTaskLocalModelsCacheWhenModelCatalogChanges(t *testing.
 		t.Fatalf("write shared cache: %v", err)
 	}
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
@@ -3486,6 +3498,9 @@ func TestReuseInvalidatesUnboundLegacyModelsCache(t *testing.T) {
 		t.Fatalf("write provider config: %v", err)
 	}
 	t.Setenv("CODEX_HOME", sharedHome)
+	if err := os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatalf("seed codex auth.json: %v", err)
+	}
 
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: t.TempDir(),
