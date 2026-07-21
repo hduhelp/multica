@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -146,7 +147,7 @@ func seedDroppedAgentMention(t *testing.T, issueNumber int32) (issueID, taskID, 
 	if err != nil {
 		t.Fatalf("setup: load mention comment: %v", err)
 	}
-	testHandler.triggerTasksForComment(ctx, issue, mentionComment, nil, "agent", agentA, "", nil)
+	testHandler.triggerTasksForComment(ctx, issue, mentionComment, nil, "agent", agentA, "", "", pgtype.UUID{}, nil)
 
 	if n := queuedTaskCountForAgentIssue(t, issueID, agentB); n != 0 {
 		t.Fatalf("expected the mention to be dropped at creation (0 queued follow-up), got %d", n)
