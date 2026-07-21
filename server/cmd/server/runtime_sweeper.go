@@ -478,6 +478,13 @@ func gcRuntime(ctx context.Context, txStarter runtimeGCTxStarter, queries *db.Qu
 	if remaining != 0 {
 		return "", false, false, fmt.Errorf("task history still references runtime after detach: %d", remaining)
 	}
+	// Backstop: release any fixed repo path locks still attributed to a runtime
+	// being permanently removed. Per-task terminal releases are the primary
+	// path; this guards the residual case where a lock outlived its task
+	// (idempotent — normally releases nothing).
+	if err := qtx.ReleaseFixedRepoLocksByRuntime(ctx, runtimeID); err != nil {
+		return "", false, false, fmt.Errorf("release fixed repo locks: %w", err)
+	}
 	if err := qtx.DeleteAgentRuntime(ctx, runtimeID); err != nil {
 		return "", false, false, fmt.Errorf("delete runtime: %w", err)
 	}
