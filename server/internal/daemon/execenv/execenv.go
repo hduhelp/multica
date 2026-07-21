@@ -145,6 +145,14 @@ type TaskContextForEnv struct {
 	// MCP overlays. Rendered briefly so the agent can map app names such as
 	// Notion to the actual MCP server name (`composio`).
 	ConnectedApps []runtimeapps.ConnectedApp
+	// Fixed repo mode: when FixedRepoMode is true the agent is running in a
+	// server-locked pre-existing directory (FixedRepoPath) under FixedRepoVcsType
+	// version control. The brief renders a `## Fixed Repo` section with
+	// VCS-appropriate safe-practice guidance so the agent works in place and
+	// never tries to clone/checkout over the directory.
+	FixedRepoMode    bool
+	FixedRepoPath    string
+	FixedRepoVcsType string
 	// RequestingUserName + RequestingUserProfileDescription describe the
 	// human the agent is acting on behalf of. v1 sources them from the
 	// runtime owner (the user who registered the daemon). Rendered into the

@@ -167,3 +167,48 @@ func TestFixedRepoClaimAssignsDistinctPathsAndBlocks(t *testing.T) {
 		t.Fatalf("reclaimed path = %q, want freed path %q", reLock.Path, lock1.Path)
 	}
 }
+
+// TestFixedRepoLockReleasedOnFailAndCancel verifies the non-complete terminal
+// transitions also free the path lock, so a failed or cancelled task never
+// wedges its directory.
+func TestFixedRepoLockReleasedOnFailAndCancel(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	queries := db.New(pool)
+	svc := NewTaskService(queries, pool, nil, events.New())
+
+	agentID, _ := fixedRepoFixture(t, ctx, pool, 2)
+	agentUUID := util.MustParseUUID(agentID)
+
+	first, err := svc.ClaimTask(ctx, agentUUID)
+	if err != nil || first == nil {
+		t.Fatalf("first claim: task=%v err=%v", first, err)
+	}
+	second, err := svc.ClaimTask(ctx, agentUUID)
+	if err != nil || second == nil {
+		t.Fatalf("second claim: task=%v err=%v", second, err)
+	}
+	if got := activeLockCount(t, ctx, pool, agentID); got != 2 {
+		t.Fatalf("active locks after 2 claims = %d, want 2", got)
+	}
+
+	// Fail the first task (running → failed) — lock released in the fail tx.
+	if _, err := pool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, first.ID); err != nil {
+		t.Fatalf("mark first running: %v", err)
+	}
+	if _, err := svc.FailTask(ctx, first.ID, "boom", "", "/data/repos/alpha", "agent_error"); err != nil {
+		t.Fatalf("fail first: %v", err)
+	}
+	if got := activeLockCount(t, ctx, pool, agentID); got != 1 {
+		t.Fatalf("active locks after fail = %d, want 1", got)
+	}
+
+	// Cancel the second task (dispatched → cancelled) — lock released via the
+	// non-transactional cancel path.
+	if _, err := svc.CancelTask(ctx, second.ID); err != nil {
+		t.Fatalf("cancel second: %v", err)
+	}
+	if got := activeLockCount(t, ctx, pool, agentID); got != 0 {
+		t.Fatalf("active locks after cancel = %d, want 0", got)
+	}
+}

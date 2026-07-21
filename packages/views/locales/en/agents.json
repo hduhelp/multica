@@ -195,7 +195,7 @@
     "save": "Save",
     "cancel": "Cancel",
     "section_fixed_repo": "Fixed repo",
-    "section_fixed_repo_hint": "Run this agent directly in existing directories on the connected computer instead of a fresh checkout per task. Local runtimes only.",
+    "section_fixed_repo_hint": "Run this agent directly in existing directories on the connected computer instead of a fresh checkout per task. Local runtimes only. Multica runs the agent in place and never switches branches or cleans the directory for you — the agent manages version control itself.",
     "prop_fixed_repo_enabled": "Enable fixed repo",
     "prop_fixed_repo_paths": "Directories",
     "fixed_repo_paths_placeholder": "/data/repos/project-a\n/data/repos/project-b",

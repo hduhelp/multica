@@ -187,7 +187,7 @@
     "save": "저장",
     "cancel": "취소",
     "section_fixed_repo": "고정 디렉터리",
-    "section_fixed_repo_hint": "작업마다 새로 체크아웃하지 않고, 연결된 컴퓨터의 기존 디렉터리에서 이 에이전트를 직접 실행합니다. 로컬 런타임 전용.",
+    "section_fixed_repo_hint": "작업마다 새로 체크아웃하지 않고, 연결된 컴퓨터의 기존 디렉터리에서 이 에이전트를 직접 실행합니다. 로컬 런타임 전용. Multica는 그 자리에서 실행하며 브랜치를 전환하거나 디렉터리를 정리하지 않습니다(버전 관리는 에이전트가 직접 합니다).",
     "prop_fixed_repo_enabled": "고정 디렉터리 사용",
     "prop_fixed_repo_paths": "디렉터리",
     "fixed_repo_paths_placeholder": "/data/repos/project-a\n/data/repos/project-b",

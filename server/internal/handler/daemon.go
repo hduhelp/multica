@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
@@ -1659,11 +1660,47 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.FixedRepoMode = true
 			resp.FixedRepoVcsType = agent.FixedRepoVcsType
 			resp.FixedRepoCleanupScript = agent.FixedRepoCleanupScript.String
-			if lock, err := h.Queries.GetActiveFixedRepoLockByTask(r.Context(), task.ID); err == nil {
+			lock, lockErr := h.Queries.GetActiveFixedRepoLockByTask(r.Context(), task.ID)
+			switch {
+			case lockErr == nil:
 				resp.FixedRepoPath = lock.Path
-			} else {
-				slog.Warn("fixed repo task has no active path lock at claim response",
-					"task_id", uuidToString(task.ID), "agent_id", uuidToString(agent.ID), "error", err)
+			case errors.Is(lockErr, pgx.ErrNoRows):
+				// Duplicate-claim recovery: the original claim lock is gone
+				// (e.g. released by a stale sweep that then reclaimed the row)
+				// but the agent is still in fixed repo mode. Re-assign a free
+				// path rather than dispatching with no directory. If none is
+				// free, fail the claim so the task stays dispatched for the next
+				// recovery — never a destructive fail/cancel here (design §137).
+				reLock, acqErr := h.Queries.AcquireFixedRepoLock(r.Context(), db.AcquireFixedRepoLockParams{
+					WorkspaceID: agent.WorkspaceID,
+					AgentID:     agent.ID,
+					TaskID:      task.ID,
+					RuntimeID:   task.RuntimeID,
+				})
+				switch {
+				case acqErr == nil:
+					resp.FixedRepoPath = reLock.Path
+					slog.Info("fixed repo: re-assigned path on reclaim",
+						"task_id", uuidToString(task.ID), "path", reLock.Path)
+				case errors.Is(acqErr, pgx.ErrNoRows):
+					return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "no_fixed_repo_path",
+						status:  http.StatusServiceUnavailable,
+						message: "no free fixed repo path to reassign on reclaim",
+					}
+				default:
+					return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "error_fixed_repo_lock",
+						status:  http.StatusInternalServerError,
+						message: "failed to reassign fixed repo path",
+					}
+				}
+			default:
+				return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_fixed_repo_lock",
+					status:  http.StatusInternalServerError,
+					message: "failed to read fixed repo lock",
+				}
 			}
 		}
 		if useSkillRefs {

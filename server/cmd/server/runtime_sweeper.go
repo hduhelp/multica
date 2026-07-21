@@ -239,6 +239,13 @@ func gcRuntimes(ctx context.Context, queries *db.Queries, bus *events.Bus) {
 	gcWorkspaces := make(map[string]bool)
 	for _, row := range deleted {
 		gcWorkspaces[util.UUIDToString(row.WorkspaceID)] = true
+		// Backstop: release any fixed repo path locks still attributed to a
+		// runtime being permanently removed. Per-task terminal releases are the
+		// primary path; this guards the residual case where a lock outlived its
+		// task (idempotent — normally releases nothing).
+		if err := queries.ReleaseFixedRepoLocksByRuntime(ctx, row.ID); err != nil {
+			slog.Warn("runtime GC: failed to release fixed repo locks", "runtime_id", util.UUIDToString(row.ID), "error", err)
+		}
 	}
 
 	slog.Info("runtime GC: deleted stale offline runtimes", "count", len(deleted), "workspaces", len(gcWorkspaces))

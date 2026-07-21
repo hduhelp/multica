@@ -179,7 +179,7 @@
     "save": "保存",
     "cancel": "キャンセル",
     "section_fixed_repo": "固定ディレクトリ",
-    "section_fixed_repo_hint": "タスクごとにチェックアウトせず、接続済みコンピューター上の既存ディレクトリでこのエージェントを直接実行します。ローカルランタイムのみ。",
+    "section_fixed_repo_hint": "タスクごとにチェックアウトせず、接続済みコンピューター上の既存ディレクトリでこのエージェントを直接実行します。ローカルランタイムのみ。 Multica はその場で実行し、ブランチの切り替えやディレクトリの掃除は行いません（バージョン管理はエージェント自身が行います）。",
     "prop_fixed_repo_enabled": "固定ディレクトリを有効化",
     "prop_fixed_repo_paths": "ディレクトリ",
     "fixed_repo_paths_placeholder": "/data/repos/project-a\n/data/repos/project-b",

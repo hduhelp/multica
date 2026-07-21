@@ -2072,6 +2072,13 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	} else {
 		h.TaskService.CaptureCancelledTasks(r.Context(), cancelled)
 	}
+	// This archive path cancels via the raw query (not TaskService), so release
+	// any fixed repo path locks held by the agent's now-cancelled tasks
+	// explicitly — otherwise an archived fixed-repo agent could leave a path
+	// permanently locked. Idempotent no-op for non-fixed-repo agents.
+	if err := h.Queries.ReleaseFixedRepoLocksByAgent(r.Context(), agent.ID); err != nil {
+		slog.Warn("release fixed repo locks on archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+	}
 
 	wsID := uuidToString(archived.WorkspaceID)
 	slog.Info("agent archived", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)

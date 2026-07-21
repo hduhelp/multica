@@ -187,7 +187,7 @@
     "save": "保存",
     "cancel": "取消",
     "section_fixed_repo": "固定目录",
-    "section_fixed_repo_hint": "让该智能体直接在已连接电脑上的现有目录中运行，而不是每个任务都重新检出。仅限本地运行时。",
+    "section_fixed_repo_hint": "让该智能体直接在已连接电脑上的现有目录中运行，而不是每个任务都重新检出。仅限本地运行时。 Multica 只在原地运行，不会替你切换分支或清理目录——版本控制由智能体自己管理。",
     "prop_fixed_repo_enabled": "启用固定目录",
     "prop_fixed_repo_paths": "目录",
     "fixed_repo_paths_placeholder": "/data/repos/project-a\n/data/repos/project-b",
