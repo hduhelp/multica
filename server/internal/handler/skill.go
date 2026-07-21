@@ -2099,91 +2099,25 @@ func (h *Handler) SyncSkillFromOrigin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceURL, ok := skillOriginSourceURL(skill.Config)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "skill has no remote source_url to sync from")
-		return
-	}
-
-	source, normalized, err := detectImportSource(sourceURL)
+	// skipUnchanged=false: a manual sync always re-imports and emits an event,
+	// even when upstream is unchanged, so the user gets an unambiguous result.
+	updated, files, _, err := h.importSkillFromSource(r.Context(), skill, false)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	var imported *importedSkill
-	switch source {
-	case sourceClawHub:
-		imported, err = fetchFromClawHub(httpClient, normalized)
-	case sourceSkillsSh:
-		imported, err = fetchFromSkillsSh(httpClient, normalized)
-	case sourceGitHub:
-		imported, err = fetchFromGitHub(httpClient, normalized)
-	}
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-
-	config := skillConfigMap(skill.Config)
-	if imported.origin != nil {
-		config["origin"] = imported.origin
-	}
-	config["last_synced_at"] = time.Now().UTC().Format(time.RFC3339)
-	configJSON, _ := json.Marshal(config)
-	files := importedSkillFiles(imported)
-
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-
-	updated, err := qtx.UpdateSkill(r.Context(), db.UpdateSkillParams{
-		ID:          skill.ID,
-		Name:        pgtype.Text{String: sanitizeNullBytes(imported.name), Valid: true},
-		Description: pgtype.Text{String: sanitizeNullBytes(imported.description), Valid: true},
-		Content:     pgtype.Text{String: sanitizeNullBytes(imported.content), Valid: true},
-		Config:      configJSON,
-	})
-	if err != nil {
-		if isUniqueViolation(err) {
+		switch {
+		case errors.Is(err, errSkillNoRemoteSource):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case isUniqueViolation(err):
 			writeError(w, http.StatusConflict, "a skill with this name already exists")
-			return
+		default:
+			// Fetch / parse / persist failure syncing from the remote origin.
+			writeError(w, http.StatusBadGateway, err.Error())
 		}
-		writeError(w, http.StatusInternalServerError, "failed to update skill: "+err.Error())
-		return
-	}
-
-	if err := qtx.DeleteSkillFilesBySkill(r.Context(), updated.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete old skill files")
-		return
-	}
-	fileResps := make([]SkillFileResponse, 0, len(files))
-	for _, f := range files {
-		sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
-			SkillID: updated.ID,
-			Path:    sanitizeNullBytes(f.Path),
-			Content: sanitizeNullBytes(f.Content),
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to upsert skill file: "+err.Error())
-			return
-		}
-		fileResps = append(fileResps, skillFileToResponse(sf))
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
 	}
 
 	resp := SkillWithFilesResponse{
 		SkillResponse: skillToResponse(updated),
-		Files:         fileResps,
+		Files:         files,
 	}
 	wsID := uuidToString(updated.WorkspaceID)
 	actorType, actorID := h.resolveActor(r, requestUserID(r), wsID)

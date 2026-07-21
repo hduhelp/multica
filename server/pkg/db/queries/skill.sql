@@ -19,6 +19,16 @@ ORDER BY name ASC;
 SELECT * FROM skill
 WHERE id = $1;
 
+-- name: ListRemoteOriginSkills :many
+-- Every skill imported from a URL, across all workspaces. Backs the hourly
+-- remote-skill sync job: a skill carries its source in config.origin.source_url
+-- when it was imported (skillOriginSourceURL). Ordered oldest-synced first so a
+-- catch-up run makes progress on the most stale skills even if it is cut short.
+SELECT * FROM skill
+WHERE config->'origin'->>'source_url' IS NOT NULL
+  AND config->'origin'->>'source_url' <> ''
+ORDER BY config->>'last_synced_at' ASC NULLS FIRST;
+
 -- name: GetSkillInWorkspace :one
 SELECT * FROM skill
 WHERE id = $1 AND workspace_id = $2;
