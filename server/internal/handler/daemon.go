@@ -1640,15 +1640,16 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 		}
 		resp.Agent = &TaskAgentData{
-			ID:            uuidToString(agent.ID),
-			Name:          agent.Name,
-			Instructions:  agent.Instructions,
-			CustomEnv:     customEnv,
-			CustomArgs:    customArgs,
-			McpConfig:     mcpConfig,
-			Model:         agent.Model.String,
-			ThinkingLevel: agent.ThinkingLevel.String,
-			RuntimeConfig: runtimeConfig,
+			ID:                    uuidToString(agent.ID),
+			Name:                  agent.Name,
+			Instructions:          agent.Instructions,
+			CustomEnv:             customEnv,
+			CustomArgs:            customArgs,
+			McpConfig:             mcpConfig,
+			Model:                 agent.Model.String,
+			ThinkingLevel:         agent.ThinkingLevel.String,
+			RuntimeConfig:         runtimeConfig,
+			DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 		}
 		// Fixed repo mode: surface the path the claim transaction locked to this
 		// task so the daemon runs the agent in-place. The lock is created in the
