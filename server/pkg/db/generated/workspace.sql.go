@@ -113,6 +113,9 @@ cleared_installations AS (
 cleared_issue_properties AS (
     DELETE FROM issue_property WHERE workspace_id = $1
 ),
+cleared_issue_relations AS (
+    DELETE FROM issue_relation WHERE workspace_id = $1
+),
 cleared_issue_statuses AS (
     -- issue_status has no FK to workspace (MUL-4809); sweep the whole catalog,
     -- archived rows included, so a deleted workspace never leaves orphan status

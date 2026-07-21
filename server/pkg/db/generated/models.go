@@ -662,6 +662,17 @@ type IssueReaction struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueRelation struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	SourceIssueID pgtype.UUID        `json:"source_issue_id"`
+	TargetIssueID pgtype.UUID        `json:"target_issue_id"`
+	Type          string             `json:"type"`
+	CreatedByType pgtype.Text        `json:"created_by_type"`
+	CreatedByID   pgtype.UUID        `json:"created_by_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueStatus struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
