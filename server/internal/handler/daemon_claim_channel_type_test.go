@@ -18,10 +18,11 @@ import (
 // mis-flag made the daemon inject `multica attachment upload` guidance into a
 // conversation that cannot carry attachments at all.
 //
-// chat_in_thread stays Slack-only and is asserted as such: it selects between
-// `multica chat history` and `multica chat thread`, and both endpoints are
-// hardwired to h.SlackHistory (chat_history.go). There is no Feishu reader, so
-// the flag has nothing to select between and must not imply one exists.
+// chat_in_thread is channel-agnostic: it selects between `multica chat history`
+// and `multica chat thread`, and both now dispatch through NewChatHistoryRouter
+// over the per-platform readers ("slack", "feishu") (MUL-4166). A Lark topic
+// (话题) session — last_thread_id set and distinct from last_message_id — sets
+// the flag exactly like a Slack thread, so the agent starts with `chat thread`.
 
 // seedChannelBinding binds sessionID to an IM channel of channelType, creating
 // the installation the binding requires. This is the row shape both the Slack
@@ -85,8 +86,9 @@ func TestClaim_FeishuBoundSessionReportsChannelType(t *testing.T) {
 	}
 	ctx := context.Background()
 	agentID, sessionID, runtimeID, _ := setupDirectChatSession(t, ctx, "feishu-backed chat")
-	// last_thread_id != last_message_id: the shape that would set ChatInThread on
-	// Slack. Feishu must still report false — there is no reader to thread into.
+	// last_thread_id != last_message_id: a Lark topic (话题). The history pull
+	// path now serves Feishu too (MUL-4166: NewChatHistoryRouter), so ChatInThread
+	// applies to Lark just like Slack and must report true.
 	seedChannelBinding(t, ctx, agentID, sessionID, "feishu", "msg-1", "thread-9")
 	insertChannelChatTask(t, ctx, agentID, runtimeID, sessionID)
 	requeueTaskForClaim(t, ctx, sessionID)
@@ -95,8 +97,8 @@ func TestClaim_FeishuBoundSessionReportsChannelType(t *testing.T) {
 	if channelType != "feishu" {
 		t.Errorf("chat_channel_type = %q, want %q — a Feishu session must not look like a web chat", channelType, "feishu")
 	}
-	if inThread {
-		t.Error("chat_in_thread must stay false on Feishu: it selects between two Slack-only read commands")
+	if !inThread {
+		t.Error("chat_in_thread must be true for a Feishu topic session now that the chat history pull path serves Feishu (MUL-4166)")
 	}
 }
 

@@ -21,8 +21,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
-	"github.com/multica-ai/multica/server/internal/integrations/channel"
-	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -2096,39 +2094,21 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					resp.ChatIntro = !hasUser
 				}
 			}
-			// Flag a channel-backed session so the daemon makes the agent aware it
-			// is operating inside an IM conversation and not the Multica web app
-			// (MUL-3871). Empty for a web-only chat session.
-			//
-			// Every registered channel type is probed, not just Slack: a Feishu
-			// session writes the same channel_chat_session_binding row under
-			// channel_type='feishu' (lark/channel_store.go), so the Slack-only
-			// lookup used to report a Feishu chat as web-backed. Downstream that
-			// mis-flag made the brief inject `multica attachment upload` guidance
-			// into a conversation that cannot carry attachments at all (MUL-4899).
-			//
-			// ChatInThread stays Slack-only on purpose. It selects between
-			// `multica chat history` and `multica chat thread`, and those two
-			// endpoints are hardwired to h.SlackHistory (chat_history.go) — there
-			// is no Feishu history reader, so the flag has nothing to select
-			// between on any other channel and must not imply one exists.
-			for _, channelType := range []channel.Type{slack.TypeSlack, channel.TypeFeishu} {
-				binding, berr := h.Queries.GetChannelChatSessionBindingBySession(r.Context(), db.GetChannelChatSessionBindingBySessionParams{
-					ChatSessionID: cs.ID,
-					ChannelType:   string(channelType),
-				})
-				if berr != nil {
-					continue
-				}
-				resp.ChatChannelType = string(channelType)
-				if channelType == slack.TypeSlack {
-					// The latest trigger was a thread reply iff its reply-target
-					// thread (last_thread_id) differs from its own message id (a
-					// top-level @mention records its own ts as both).
-					resp.ChatInThread = binding.LastThreadID.Valid && binding.LastThreadID.String != "" &&
-						binding.LastThreadID.String != binding.LastMessageID.String
-				}
-				break
+			// Flag a channel-backed session so the daemon makes the agent aware
+			// it is operating inside its IM channel (Slack, Lark) — read this
+			// conversation's history from the channel via `multica chat history` /
+			// `multica chat thread`, not from Multica (MUL-3871, MUL-4166). Empty
+			// for a web-only chat session. The binding is looked up by session
+			// alone (chat_session_id is UNIQUE) so any wired channel type lights
+			// up the pull path, not just Slack. ChatInThread tells the agent which
+			// command to start with: the latest trigger was a thread reply iff its
+			// reply-target thread (last_thread_id) differs from its own message id
+			// — for Slack a top-level @mention records its own ts as both; for Lark
+			// last_thread_id is set only inside a topic (话题).
+			if binding, berr := h.Queries.GetChannelChatSessionBindingBySessionAny(r.Context(), cs.ID); berr == nil {
+				resp.ChatChannelType = binding.ChannelType
+				resp.ChatInThread = binding.LastThreadID.Valid && binding.LastThreadID.String != "" &&
+					binding.LastThreadID.String != binding.LastMessageID.String
 			}
 			if ws, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID); err == nil && ws.Repos != nil {
 				var repos []RepoData

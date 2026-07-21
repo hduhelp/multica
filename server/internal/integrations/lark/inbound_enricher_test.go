@@ -85,6 +85,9 @@ func (f *enricherFakeClient) DownloadMessageResource(context.Context, Installati
 }
 
 // Unused-by-enricher methods — present only to satisfy APIClient.
+func (f *enricherFakeClient) ListContainerMessages(context.Context, InstallationCredentials, ListContainerParams) (ListContainerResult, error) {
+	return ListContainerResult{}, nil
+}
 func (f *enricherFakeClient) SendInteractiveCard(context.Context, SendCardParams) (string, error) {
 	return "", nil
 }

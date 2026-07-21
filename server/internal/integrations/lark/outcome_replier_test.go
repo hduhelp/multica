@@ -93,6 +93,9 @@ func (s *stubAPIClientWithRecorder) ListChatMessages(ctx context.Context, creds 
 func (s *stubAPIClientWithRecorder) DownloadMessageResource(ctx context.Context, creds InstallationCredentials, p DownloadResourceParams) (DownloadedResource, error) {
 	return DownloadedResource{}, nil
 }
+func (s *stubAPIClientWithRecorder) ListContainerMessages(ctx context.Context, creds InstallationCredentials, p ListContainerParams) (ListContainerResult, error) {
+	return ListContainerResult{}, nil
+}
 func (s *stubAPIClientWithRecorder) BatchGetUsers(ctx context.Context, creds InstallationCredentials, openIDs []string) (map[string]string, error) {
 	return nil, nil
 }
