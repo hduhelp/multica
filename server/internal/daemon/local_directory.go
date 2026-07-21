@@ -38,6 +38,16 @@ type localDirectoryAssignment struct {
 	Ref      localDirectoryRef
 	AbsPath  string // user-provided path, cleaned but not symlink-resolved
 	RealPath string // canonical key for the path mutex
+	// FixedRepo marks an assignment that came from agent fixed repo mode
+	// (server-locked fixed_repo_path) rather than a local_directory project
+	// resource. Both share the daemon's in-place execution machinery (GC
+	// protection, per-task config home, sidecar cleanup, path mutex); FixedRepo
+	// only gates the extra MULTICA_FIXED_REPO_* env vars and the
+	// `multica repo checkout` rejection.
+	FixedRepo bool
+	// VcsType is the fixed repo's declared VCS (git/perforce/none/custom); only
+	// meaningful when FixedRepo is true. Drives VCS-safety guidance in the brief.
+	VcsType string
 }
 
 // localDirectoryAssignmentForTask returns the local_directory assignment a task
@@ -45,6 +55,12 @@ type localDirectoryAssignment struct {
 // child issues or comments, but should not bind to the user's repo worktree or
 // hold the path mutex while downstream workers are ready to write.
 func localDirectoryAssignmentForTask(task Task, daemonID string) (*localDirectoryAssignment, error) {
+	// Fixed repo mode takes precedence and applies even to leader tasks: a
+	// fixed-repo agent has no worktree to fall back to, so its directory is
+	// where every one of its tasks runs. The server guarantees a locked path.
+	if task.FixedRepoMode {
+		return fixedRepoAssignmentForTask(task)
+	}
 	if task.IsLeaderTask {
 		return nil, nil
 	}

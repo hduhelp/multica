@@ -172,6 +172,15 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, "url is required", http.StatusBadRequest)
 			return
 		}
+		// Fixed repo mode defense-in-depth: even if a request bypasses the CLI's
+		// MULTICA_FIXED_REPO_MODE guard, refuse to clone/checkout for a task the
+		// daemon is running in a server-locked fixed directory.
+		if taskID := strings.TrimSpace(req.TaskID); taskID != "" {
+			if _, fixed := d.fixedRepoTasks.Load(taskID); fixed {
+				http.Error(w, "task runs in fixed repo mode: checkout is disabled; work in the existing directory", http.StatusConflict)
+				return
+			}
+		}
 		if req.WorkspaceID == "" {
 			http.Error(w, "workspace_id is required", http.StatusBadRequest)
 			return

@@ -59,6 +59,13 @@ const (
 	taskSlotCapacityBackoff  = 5 * time.Second
 	repoCheckoutModeEnv      = "MULTICA_REPO_CHECKOUT_MODE"
 	repoCheckoutModeIsolated = "isolated"
+	// Fixed repo mode env vars injected into the agent process. The CLI keys
+	// on fixedRepoModeEnv to refuse `multica repo checkout`; the path and vcs
+	// type are informational context. These are daemon-authoritative — custom
+	// env must never override them (see layerCustomEnvAndHermesHome blocklist).
+	fixedRepoModeEnv    = "MULTICA_FIXED_REPO_MODE"
+	fixedRepoPathEnv    = "MULTICA_FIXED_REPO_PATH"
+	fixedRepoVcsTypeEnv = "MULTICA_FIXED_REPO_VCS_TYPE"
 	// defaultTaskPrepareTimeout is a hard liveness bound for everything after
 	// claim and before StartTask succeeds: runtime resolution, skill bundles,
 	// execution-environment setup, and the StartTask request itself. It is
@@ -323,6 +330,12 @@ type Daemon struct {
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
 	activeEnvRoots     map[string]int  // env root path -> reference count (handles reuse paths marked twice)
 	deletingEnvRoots   map[string]bool // env roots reserved by GC; new tasks wait until the mutation finishes
+
+	// fixedRepoTasks tracks task IDs currently executing in fixed repo mode so
+	// the /repo/checkout endpoint can reject a checkout request even if a
+	// hand-crafted request bypasses the CLI's MULTICA_FIXED_REPO_MODE guard.
+	// Registered in runTask, cleared when the task finishes.
+	fixedRepoTasks sync.Map // taskID (string) -> struct{}
 
 	activeCodexStoresMu   sync.Mutex
 	activeCodexStoresCond *sync.Cond      // signalled when an in-flight store deletion finishes, so a blocked markActive can proceed
@@ -4136,6 +4149,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// LocalWorkDir into execenv. handleTask already validated + locked the
 	// path for worker tasks; leader tasks intentionally skip the assignment.
 	localAssignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
+	// Register fixed repo tasks so /repo/checkout can reject a bypass request
+	// for the duration of the run (the CLI env-var guard is the primary gate).
+	if localAssignment != nil && localAssignment.FixedRepo {
+		d.fixedRepoTasks.Store(task.ID, struct{}{})
+		defer d.fixedRepoTasks.Delete(task.ID)
+	}
 	// Reuse intentionally skipped for local_directory tasks: the prior
 	// WorkDir is the user's own path (always present) but the reuse path
 	// loses the envRoot association the GC loop needs, and re-running
@@ -4376,6 +4395,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	if checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS); checkoutMode != "" {
 		agentEnv[repoCheckoutModeEnv] = checkoutMode
+	}
+	// Fixed repo mode: signal the CLI to reject `multica repo checkout` (the
+	// agent must not clone/checkout over the user's directory) and surface the
+	// locked path + declared VCS type as context.
+	if localAssignment != nil && localAssignment.FixedRepo {
+		agentEnv[fixedRepoModeEnv] = "true"
+		agentEnv[fixedRepoPathEnv] = localAssignment.AbsPath
+		agentEnv[fixedRepoVcsTypeEnv] = localAssignment.VcsType
 	}
 	if task.AutopilotRunID != "" {
 		agentEnv["MULTICA_AUTOPILOT_RUN_ID"] = task.AutopilotRunID
