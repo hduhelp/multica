@@ -157,7 +157,16 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 
 	isForward := msg.MessageType == larkMsgTypeMergeForward
 	wantRecent := e.recentContextSize > 0 && msg.ChatType == ChatTypeGroup && msg.AddressedToBot
-	if msg.ParentID == "" && !isForward && !wantRecent {
+	// A quoted parent is inlined as <quoted_message> context ONLY for a
+	// top-level message (ThreadID == ""). Inside a 话题 the parent is part of the
+	// same topic, and since a topic continues one agent session
+	// (larkSessionRouting keys on the thread root) that parent is ALREADY in the
+	// agent's history. Re-injecting it would double the context and leak the raw
+	// block into the persisted transcript, so inside a topic we skip the quote
+	// and let session history carry the continuity. A genuine cross-thread quote
+	// while inside a topic is rare and loses only the inlined copy, not history.
+	wantQuoted := msg.ParentID != "" && msg.ThreadID == ""
+	if !wantQuoted && !isForward && !wantRecent {
 		// Nothing to expand and no group prefetch wanted — no network call.
 		return msg
 	}
@@ -181,7 +190,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	}
 	var quotedItems []LarkMessage
 	var quotedErr error
-	if msg.ParentID != "" {
+	if wantQuoted {
 		quotedItems, quotedErr = e.client.GetMessage(ctx, creds, msg.ParentID)
 	}
 	var forwardItems []LarkMessage
@@ -215,7 +224,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 			b.WriteString(e.renderRecentContextBlock(recentItems, names))
 		}
 	}
-	if msg.ParentID != "" {
+	if wantQuoted {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
