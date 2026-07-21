@@ -2452,3 +2452,22 @@ describe("clientErrorMessage", () => {
     expect(clientErrorMessage(undefined)).toBeUndefined();
   });
 });
+
+describe("ApiClient getTask", () => {
+  it("returns null when the task response is malformed", async () => {
+    // A wrong-typed id / missing fields must not crash the transcript icon —
+    // getTask returns null and the caller simply skips opening the dialog.
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 123, status: null }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.getTask("task-1")).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/tasks/task-1");
+  });
+});
