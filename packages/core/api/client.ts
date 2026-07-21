@@ -166,6 +166,7 @@ import { createRequestId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
+  AgentTaskSchema,
   AgentTaskListSchema,
   AgentTemplateSchema,
   AgentTemplateSummaryListSchema,
@@ -1674,6 +1675,17 @@ export class ApiClient {
 
   async listTaskMessages(taskId: string): Promise<TaskMessagePayload[]> {
     return this.fetch(`/api/tasks/${taskId}/messages`);
+  }
+
+  // Single task metadata, used to hydrate the transcript dialog header when a
+  // surface only knows a task id (a comment's source_task_id, a chat message's
+  // task_id). Returns null on a malformed response so the caller can simply
+  // skip the transcript affordance rather than crash the surrounding view.
+  async getTask(taskId: string): Promise<AgentTask | null> {
+    const raw = await this.fetch<unknown>(`/api/tasks/${taskId}`);
+    return parseWithFallback<AgentTask | null>(raw, AgentTaskSchema, null, {
+      endpoint: "GET /api/tasks/{taskId}",
+    });
   }
 
   async listTasksByIssue(issueId: string): Promise<AgentTask[]> {

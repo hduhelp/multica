@@ -1474,6 +1474,43 @@ func TestListTaskMessagesByUser_InvalidTaskIDReturnsBadRequest(t *testing.T) {
 	}
 }
 
+func TestGetTaskByUser_InvalidTaskIDReturnsBadRequest(t *testing.T) {
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/not-a-uuid", nil)
+	req = withURLParams(req, "taskId", "not-a-uuid")
+
+	(&Handler{}).GetTaskByUser(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid task id, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "task_id") {
+		t.Fatalf("expected task_id validation error, got %s", w.Body.String())
+	}
+}
+
+// A task that lives in another workspace must be indistinguishable from a
+// missing one: GetTaskByUser returns 404, never the task, so the transcript
+// icon can't be used to probe cross-tenant runs by id.
+func TestGetTaskByUser_ForeignWorkspaceTaskReturnsNotFound(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	_, foreignTaskID := setupForeignWorkspaceFixture(t)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+foreignTaskID, nil)
+	req = withURLParams(req, "taskId", foreignTaskID)
+	// Caller is scoped to testWorkspaceID; the task lives in the foreign one.
+	req = req.WithContext(middleware.SetMemberContext(req.Context(), testWorkspaceID, db.Member{}))
+
+	testHandler.GetTaskByUser(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for a foreign-workspace task, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // setupForeignWorkspaceFixture creates an isolated workspace (not reachable
 // from testUserID) with its own agent, runtime, issue, and queued task.
 // Returns (issueID, taskID). All rows are cleaned up when the test ends.

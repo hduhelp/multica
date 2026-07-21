@@ -32,7 +32,10 @@ import type {
   TaskMessagePayload,
 } from "@multica/core/types";
 import type { ChatTimelineItem } from "@multica/core/chat";
-import { buildTimeline } from "../../common/task-transcript";
+import {
+  buildTimeline,
+  TaskTranscriptButton,
+} from "../../common/task-transcript";
 import { TaskStatusPill } from "./task-status-pill";
 import { formatElapsedMs } from "../lib/format";
 import { splitTimeline, extractCopyText } from "../lib/copy-text";
@@ -55,6 +58,8 @@ interface ChatMessageListProps {
   onLoadOlderMessages?: () => void;
   /** Transform assistant task text for embedded chat protocols before render/copy. */
   transformContent?: (content: string) => string;
+  /** Active agent's display name, used to label its transcript dialog. */
+  agentName?: string;
 }
 
 // ─── Virtuoso chrome ─────────────────────────────────────────────────────
@@ -143,6 +148,7 @@ export function ChatMessageList({
   isFetchingOlderMessages = false,
   onLoadOlderMessages,
   transformContent,
+  agentName,
 }: ChatMessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
@@ -253,6 +259,7 @@ export function ChatMessageList({
               item={item}
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}
               transformContent={transformContent}
+              agentName={agentName}
             />
           </div>
         )}
@@ -301,10 +308,12 @@ const MessageBubble = memo(function MessageBubble({
   item,
   isPending,
   transformContent,
+  agentName,
 }: {
   item: ChatRenderItem;
   isPending: boolean;
   transformContent?: (content: string) => string;
+  agentName?: string;
 }) {
   // The live row and the persisted assistant row both land here under one key,
   // and both render <AssistantMessage> — same component type, same position —
@@ -315,6 +324,7 @@ const MessageBubble = memo(function MessageBubble({
         taskId={item.taskId}
         isPending={isPending}
         transformContent={transformContent}
+        agentName={agentName}
       />
     );
   }
@@ -352,6 +362,7 @@ const MessageBubble = memo(function MessageBubble({
       message={message}
       isPending={isPending}
       transformContent={transformContent}
+      agentName={agentName}
     />
   );
 });
@@ -378,11 +389,13 @@ function AssistantMessage({
   message,
   isPending,
   transformContent,
+  agentName,
 }: {
   taskId: string | null;
   message?: ChatMessage;
   isPending: boolean;
   transformContent?: (content: string) => string;
+  agentName?: string;
 }) {
   const canFetchTaskMessages = isTaskMessageTaskId(taskId);
 
@@ -457,6 +470,7 @@ function AssistantMessage({
             message={message}
             timeline={timeline}
             isPending={isPending}
+            agentName={agentName}
           />
         </>
       )}
@@ -497,16 +511,26 @@ function MessageFooter({
   message,
   timeline,
   isPending,
+  agentName,
 }: {
   message: ChatMessage;
   timeline: ChatTimelineItem[];
   isPending: boolean;
+  agentName?: string;
 }) {
   // A no_response turn has nothing to copy, and its caption uses a neutral
   // "Finished in Xs" instead of "Replied in Xs" (MUL-4351).
   const isNoResponse = message.message_kind === "no_response";
   const showCopy = !isPending && !isNoResponse;
-  if (message.elapsed_ms == null && !showCopy) return null;
+  // Offer the full transcript dialog once the turn has landed on a persisted
+  // task that actually ran steps (tool calls / thinking). A bare text reply
+  // needs no "record" — the reply itself is the whole turn — so gate on the
+  // timeline having content to keep the affordance meaningful, not noisy.
+  const transcriptTaskId =
+    !isPending && isTaskMessageTaskId(message.task_id) && timeline.length > 0
+      ? message.task_id
+      : null;
+  if (message.elapsed_ms == null && !showCopy && !transcriptTaskId) return null;
   return (
     <div className="flex items-center gap-1.5">
       {message.elapsed_ms != null && (
@@ -516,6 +540,12 @@ function MessageFooter({
         />
       )}
       {showCopy && <MessageCopyButton message={message} timeline={timeline} />}
+      {transcriptTaskId && (
+        <TaskTranscriptButton
+          taskId={transcriptTaskId}
+          agentName={agentName ?? "Agent"}
+        />
+      )}
     </div>
   );
 }

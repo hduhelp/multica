@@ -24,6 +24,7 @@ import {
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { TaskTranscriptButton } from "../../common/task-transcript";
 import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
@@ -256,6 +257,21 @@ function retryableAgentFailureComment(entry: TimelineEntry): entry is TimelineEn
     typeof entry.source_task_id === "string" &&
     entry.source_task_id.length > 0
   );
+}
+
+// The run behind an agent comment, if any. Every agent-authored comment that
+// records its originating task (source_task_id) can open that run's transcript
+// — success replies and failure notices alike — so the execution steps are one
+// click from the output instead of buried in the Execution log panel.
+function agentCommentTaskId(entry: TimelineEntry): string | null {
+  if (
+    entry.actor_type === "agent" &&
+    typeof entry.source_task_id === "string" &&
+    entry.source_task_id.length > 0
+  ) {
+    return entry.source_task_id;
+  }
+  return null;
 }
 
 function TaskCommentRetryButton({
@@ -561,6 +577,12 @@ function CommentRow({
         )}
 
         <div className="ml-auto flex items-center gap-0.5">
+          {agentCommentTaskId(entry) && (
+            <TaskTranscriptButton
+              taskId={agentCommentTaskId(entry)!}
+              agentName={getActorName(entry.actor_type, entry.actor_id)}
+            />
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -860,6 +882,12 @@ function CommentCardImpl({
 
               {open && (
                 <div className="ml-auto flex items-center gap-0.5">
+                  {agentCommentTaskId(entry) && (
+                    <TaskTranscriptButton
+                      taskId={agentCommentTaskId(entry)!}
+                      agentName={getActorName(entry.actor_type, entry.actor_id)}
+                    />
+                  )}
                   <DropdownMenu>
                     <DropdownMenuTrigger
                       render={

@@ -1110,6 +1110,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Task messages (user-facing, not daemon auth)
 			r.Get("/api/tasks/{taskId}/messages", h.ListTaskMessagesByUser)
+			// Single task metadata — hydrates the transcript dialog header from a
+			// bare task id (comment.source_task_id / chat message.task_id).
+			r.Get("/api/tasks/{taskId}", h.GetTaskByUser)
 
 			// Custom issue properties (definitions; values live under /api/issues/{id}/properties)
 			r.Route("/api/properties", func(r chi.Router) {

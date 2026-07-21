@@ -3819,6 +3819,36 @@ func (h *Handler) ListTaskMessagesByUser(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// GetTaskByUser returns a single agent task's metadata (status, runtime,
+// timings, work dir, attribution) for the caller's workspace. It backs the
+// transcript icon rendered next to agent output anywhere in the app: a surface
+// that only knows a task id (a comment's source_task_id, a chat message's
+// task_id) hydrates the transcript dialog header through this endpoint, then
+// pulls the event stream from the sibling /messages route. Same workspace-scoped
+// access model as ListTaskMessagesByUser.
+func (h *Handler) GetTaskByUser(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+	taskUUID, ok := parseUUIDOrBadRequest(w, taskID, "task_id")
+	if !ok {
+		return
+	}
+
+	task, err := h.Queries.GetAgentTask(r.Context(), taskUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	// Verify the task belongs to the caller's workspace before disclosing it.
+	wsID := h.TaskService.ResolveTaskWorkspaceID(r.Context(), task)
+	if wsID == "" || wsID != middleware.WorkspaceIDFromContext(r.Context()) {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, taskToResponse(task, wsID))
+}
+
 // GetIssueUsage returns aggregated token usage for all tasks belonging to an issue.
 func (h *Handler) GetIssueUsage(w http.ResponseWriter, r *http.Request) {
 	issueID := chi.URLParam(r, "id")
