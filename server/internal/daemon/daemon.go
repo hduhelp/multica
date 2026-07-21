@@ -3356,8 +3356,18 @@ func taskRunFailureReason(err error) string {
 //  4. The blocking wait is cancelled (daemon shutdown, server-side cancel)
 //     — fail the task with the ctx error.
 func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Task, taskLog *slog.Logger) (release func(), abort bool) {
-	if len(task.ProjectResources) == 0 || d.cfg.DaemonID == "" {
+	// Fixed repo tasks carry no project_resources but must go through the same
+	// validate → fail-fast → path-mutex flow: without this the invalid-path
+	// error would be swallowed in runTask and the task would wrongly fall back
+	// to a worktree checkout instead of failing with a clear message.
+	if (len(task.ProjectResources) == 0 && !task.FixedRepoMode) || d.cfg.DaemonID == "" {
 		return nil, false
+	}
+	// Distinguish fixed-repo failures in the surfaced reason so the UI/fail
+	// comment reads accurately (the two share the resolution/validation code).
+	failureReason := "local_directory_error"
+	if task.FixedRepoMode {
+		failureReason = "fixed_repo_error"
 	}
 	assignment, err := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
 	if err != nil {
@@ -3366,7 +3376,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			kind:          terminalTaskReportFail,
 			taskID:        task.ID,
 			errorMessage:  err.Error(),
-			failureReason: "local_directory_error",
+			failureReason: failureReason,
 		}); failErr != nil {
 			taskLog.Error("fail task after local_directory resolve error", "error", failErr)
 		}
@@ -3382,7 +3392,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			kind:          terminalTaskReportFail,
 			taskID:        task.ID,
 			errorMessage:  err.Error(),
-			failureReason: "local_directory_error",
+			failureReason: failureReason,
 		}); failErr != nil {
 			taskLog.Error("fail task after local_directory validation error", "error", failErr)
 		}
