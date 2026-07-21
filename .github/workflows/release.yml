@@ -1,124 +1,146 @@
 name: Release
 
+# Production delivery follows the same release-manifest model as hduhelp-neo:
+# edit the root release.yml, then push that commit to main. Images are published
+# to GHCR for public/self-host use and mirrored to Aliyun ACR for the production
+# cluster. The unified chart is published as an OCI artifact in GHCR.
 on:
   push:
-    tags:
-      # GitHub Actions uses glob patterns here, not regex. Match versioned
-      # tags broadly at the trigger layer, then enforce strict semver below.
-      - "v*.*.*"
-      - "!v*-dirty*"
+    branches: [main]
+    paths: [release.yml]
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Component to rebuild with the versions already in release.yml
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - backend
+          - web
+          - chart
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
   packages: write
 
+env:
+  REGISTRY: ghcr.io
+  ACR_REGISTRY: registry.ap-northeast-1.aliyuncs.com
+  CHART_PATH: deploy/helm/multica
+
 jobs:
-  verify:
+  detect:
+    name: Detect version change
     runs-on: ubuntu-latest
     outputs:
-      tag_name: ${{ steps.release_meta.outputs.tag_name }}
-      is_stable: ${{ steps.release_meta.outputs.is_stable }}
+      backend_changed: ${{ steps.diff.outputs.backend_changed }}
+      backend_version: ${{ steps.parse.outputs.backend_version }}
+      web_changed: ${{ steps.diff.outputs.web_changed }}
+      web_version: ${{ steps.parse.outputs.web_version }}
+      chart_changed: ${{ steps.diff.outputs.chart_changed }}
+      chart_version: ${{ steps.parse.outputs.chart_version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 2
 
-      - name: Validate tag name
-        id: release_meta
+      - name: Parse versions
+        id: parse
         shell: bash
         run: |
-          tag="${GITHUB_REF_NAME}"
-          echo "Triggered by tag: $tag"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Release tags must look like vX.Y.Z or vX.Y.Z-suffix; got '$tag'."
-            exit 1
-          fi
-          if [[ "$tag" == *-dirty* ]]; then
-            echo "::error::Refusing to release from dirty tag '$tag'."
-            exit 1
-          fi
-          echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
-          if [[ "$tag" == *-* ]]; then
-            echo "is_stable=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_stable=true" >> "$GITHUB_OUTPUT"
-          fi
+          set -euo pipefail
+          emit() {
+            key=$1
+            value=$(awk -v key="$key" '$1 == key ":" { print $2 }' release.yml)
+            if [[ ! "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release.yml must contain '$key: <major.minor.patch>'; got '$value'."
+              exit 1
+            fi
+            echo "${key}_version=${value}" >> "$GITHUB_OUTPUT"
+          }
+          emit backend
+          emit web
+          emit chart
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: server/go.mod
-          cache-dependency-path: server/go.sum
-
-      - name: Run tests
-        run: cd server && go test -race ./...
-
-  release:
-    needs: verify
-    # Only run on the canonical upstream repo. Forks don't have the
-    # HOMEBREW_TAP_GITHUB_TOKEN secret and should not be publishing to
-    # `multica-ai/homebrew-tap` anyway. Without this guard, every fork's
-    # tag push fails this job (401 against the upstream tap), which makes
-    # downstream CI go red without affecting the actual artifact pipeline.
-    if: github.repository_owner == 'multica-ai'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: server/go.mod
-          cache-dependency-path: server/go.sum
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          version: "~> v2"
-          args: release --clean
+      - name: Diff against previous release.yml
+        id: diff
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          set -euo pipefail
 
-  # Multi-arch images are built natively per platform on dedicated runners
-  # (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm) and merged into a
-  # manifest list. This avoids QEMU emulation, which was making the Next.js
-  # arm64 build run for 30+ minutes per release.
-  docker-backend-build:
-    needs: verify
+          if [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
+            selected=${REBUILD:-all}
+            for component in backend web chart; do
+              changed=false
+              if [[ "$selected" == all || "$selected" == "$component" ]]; then
+                changed=true
+              fi
+              echo "${component}_changed=${changed}" >> "$GITHUB_OUTPUT"
+            done
+            exit 0
+          fi
+
+          if ! git show HEAD~1:release.yml > /tmp/old-release.yml 2>/dev/null; then
+            echo "backend_changed=true" >> "$GITHUB_OUTPUT"
+            echo "web_changed=true" >> "$GITHUB_OUTPUT"
+            echo "chart_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed_key() {
+            key=$1
+            old=$(awk -v key="$key" '$1 == key ":" { print $2 }' /tmp/old-release.yml)
+            new=$(awk -v key="$key" '$1 == key ":" { print $2 }' release.yml)
+            [[ "$old" != "$new" ]]
+          }
+
+          backend_changed=false
+          web_changed=false
+          chart_changed=false
+          changed_key backend && backend_changed=true
+          changed_key web && web_changed=true
+          changed_key chart && chart_changed=true
+
+          if [[ ("$backend_changed" == true || "$web_changed" == true) && "$chart_changed" != true ]]; then
+            echo "::error::Bump 'chart' whenever an image version changes so the OCI chart remains immutable."
+            exit 1
+          fi
+
+          echo "backend_changed=$backend_changed" >> "$GITHUB_OUTPUT"
+          echo "web_changed=$web_changed" >> "$GITHUB_OUTPUT"
+          echo "chart_changed=$chart_changed" >> "$GITHUB_OUTPUT"
+
+  backend-build:
+    name: Build Backend (${{ matrix.platform }})
+    needs: detect
+    if: needs.detect.outputs.backend_changed == 'true' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ubuntu-latest
+            runner: ubuntu-latest
           - platform: linux/arm64
-            runs-on: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runs-on }}
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Prepare
+      - name: Prepare platform name
+        shell: bash
         run: |
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
 
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Compute backend image labels
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/multica-backend
-          labels: |
-            org.opencontainers.image.title=Multica Backend
-            org.opencontainers.image.description=Multica self-hosted backend
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -127,64 +149,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push by digest
-        id: build
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Build and push platform image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           pull: true
+          push: true
           platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=release-backend-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=release-backend-${{ env.PLATFORM_PAIR }}
           build-args: |
-            VERSION=${{ needs.verify.outputs.tag_name }}
+            VERSION=${{ needs.detect.outputs.backend_version }}
             COMMIT=${{ github.sha }}
-          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/multica-backend,push-by-digest=true,name-canonical=true,push=true
-
-      - name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-backend-${{ env.PLATFORM_PAIR }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  docker-backend-merge:
-    needs: [verify, docker-backend-build]
-    runs-on: ubuntu-latest
-    concurrency:
-      group: release-docker-backend-${{ github.ref }}
-      cancel-in-progress: true
-    steps:
-      - name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/digests
-          pattern: digests-backend-*
-          merge-multiple: true
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Compute backend image tags
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/multica-backend
-          flavor: |
-            latest=false
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.detect.outputs.backend_version }}
           tags: |
-            type=raw,value=latest,enable=${{ needs.verify.outputs.is_stable == 'true' }}
-            type=raw,value=${{ needs.verify.outputs.tag_name }}
-            type=sha,prefix=sha-
+            ghcr.io/${{ github.repository_owner }}/multica-backend:${{ needs.detect.outputs.backend_version }}-${{ env.PLATFORM_PAIR }}
+            ${{ env.ACR_REGISTRY }}/${{ github.repository_owner }}/multica-backend:${{ needs.detect.outputs.backend_version }}-${{ env.PLATFORM_PAIR }}
+
+  backend-publish:
+    name: Publish Backend Image
+    needs: [detect, backend-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -193,49 +191,57 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create manifest list and push
-        working-directory: /tmp/digests
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Publish multi-arch manifests
+        shell: bash
+        env:
+          VERSION: ${{ needs.detect.outputs.backend_version }}
         run: |
+          set -euo pipefail
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          ghcr="ghcr.io/${owner}/multica-backend"
+          acr="${ACR_REGISTRY}/${owner}/multica-backend"
+          sha="sha-${GITHUB_SHA::7}"
+
           docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/${{ github.repository_owner }}/multica-backend@sha256:%s ' *)
+            -t "${ghcr}:${VERSION}" -t "${ghcr}:${sha}" -t "${ghcr}:latest" \
+            "${ghcr}:${VERSION}-linux-amd64" \
+            "${ghcr}:${VERSION}-linux-arm64"
+          docker buildx imagetools create \
+            -t "${acr}:${VERSION}" -t "${acr}:${sha}" -t "${acr}:latest" \
+            "${acr}:${VERSION}-linux-amd64" \
+            "${acr}:${VERSION}-linux-arm64"
+          docker buildx imagetools inspect "${acr}:${VERSION}"
 
-      - name: Inspect image
-        run: |
-          docker buildx imagetools inspect \
-            ghcr.io/${{ github.repository_owner }}/multica-backend:${{ steps.meta.outputs.version }}
-
-  docker-web-build:
-    needs: verify
+  web-build:
+    name: Build Web (${{ matrix.platform }})
+    needs: detect
+    if: needs.detect.outputs.web_changed == 'true' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ubuntu-latest
+            runner: ubuntu-latest
           - platform: linux/arm64
-            runs-on: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runs-on }}
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Prepare
+      - name: Prepare platform name
+        shell: bash
         run: |
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
 
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Compute web image labels
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/multica-web
-          labels: |
-            org.opencontainers.image.title=Multica Web
-            org.opencontainers.image.description=Multica self-hosted web frontend
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -244,64 +250,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push by digest
-        id: build
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Build and push platform image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.web
           pull: true
+          push: true
           platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=release-web-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=release-web-${{ env.PLATFORM_PAIR }}
           build-args: |
             REMOTE_API_URL=http://backend:8080
-            NEXT_PUBLIC_APP_VERSION=${{ needs.verify.outputs.tag_name }}
-          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/multica-web,push-by-digest=true,name-canonical=true,push=true
-
-      - name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-web-${{ env.PLATFORM_PAIR }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  docker-web-merge:
-    needs: [verify, docker-web-build]
-    runs-on: ubuntu-latest
-    concurrency:
-      group: release-docker-web-${{ github.ref }}
-      cancel-in-progress: true
-    steps:
-      - name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/digests
-          pattern: digests-web-*
-          merge-multiple: true
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Compute web image tags
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/multica-web
-          flavor: |
-            latest=false
+            NEXT_PUBLIC_APP_VERSION=${{ needs.detect.outputs.web_version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.detect.outputs.web_version }}
           tags: |
-            type=raw,value=latest,enable=${{ needs.verify.outputs.is_stable == 'true' }}
-            type=raw,value=${{ needs.verify.outputs.tag_name }}
-            type=sha,prefix=sha-
+            ghcr.io/${{ github.repository_owner }}/multica-web:${{ needs.detect.outputs.web_version }}-${{ env.PLATFORM_PAIR }}
+            ${{ env.ACR_REGISTRY }}/${{ github.repository_owner }}/multica-web:${{ needs.detect.outputs.web_version }}-${{ env.PLATFORM_PAIR }}
+
+  web-publish:
+    name: Publish Web Image
+    needs: [detect, web-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -310,112 +292,81 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create manifest list and push
-        working-directory: /tmp/digests
-        run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/${{ github.repository_owner }}/multica-web@sha256:%s ' *)
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
 
-      - name: Inspect image
+      - name: Publish multi-arch manifests
+        shell: bash
+        env:
+          VERSION: ${{ needs.detect.outputs.web_version }}
         run: |
-          docker buildx imagetools inspect \
-            ghcr.io/${{ github.repository_owner }}/multica-web:${{ steps.meta.outputs.version }}
+          set -euo pipefail
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          ghcr="ghcr.io/${owner}/multica-web"
+          acr="${ACR_REGISTRY}/${owner}/multica-web"
+          sha="sha-${GITHUB_SHA::7}"
+
+          docker buildx imagetools create \
+            -t "${ghcr}:${VERSION}" -t "${ghcr}:${sha}" -t "${ghcr}:latest" \
+            "${ghcr}:${VERSION}-linux-amd64" \
+            "${ghcr}:${VERSION}-linux-arm64"
+          docker buildx imagetools create \
+            -t "${acr}:${VERSION}" -t "${acr}:${sha}" -t "${acr}:latest" \
+            "${acr}:${VERSION}-linux-amd64" \
+            "${acr}:${VERSION}-linux-arm64"
+          docker buildx imagetools inspect "${acr}:${VERSION}"
 
   helm-chart:
-    needs: [verify, docker-backend-merge, docker-web-merge]
-    if: github.repository_owner == 'multica-ai'
+    name: Publish Helm Chart
+    needs: [detect, backend-publish, web-publish]
+    if: >
+      always() &&
+      needs.detect.outputs.chart_changed == 'true' &&
+      (needs.backend-publish.result == 'success' || needs.backend-publish.result == 'skipped') &&
+      (needs.web-publish.result == 'success' || needs.web-publish.result == 'skipped') &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    concurrency:
-      group: release-helm-chart-${{ github.ref }}
-      cancel-in-progress: true
-    env:
-      CHART_DIR: deploy/helm/multica
-      OCI_REGISTRY: oci://ghcr.io/${{ github.repository_owner }}/charts
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Helm
-        uses: azure/setup-helm@v4
-
-      - name: Sync chart metadata with release tag
+      - name: Sync chart metadata from release.yml
+        shell: bash
         env:
-          TAG_NAME: ${{ needs.verify.outputs.tag_name }}
+          BACKEND_VERSION: ${{ needs.detect.outputs.backend_version }}
+          WEB_VERSION: ${{ needs.detect.outputs.web_version }}
+          CHART_VERSION: ${{ needs.detect.outputs.chart_version }}
         run: |
-          chart_version="${TAG_NAME#v}"
-          sed -i -E "s/^version:.*/version: ${chart_version}/" "$CHART_DIR/Chart.yaml"
-          sed -i -E "s/^appVersion:.*/appVersion: \"${TAG_NAME}\"/" "$CHART_DIR/Chart.yaml"
-          echo "CHART_VERSION=${chart_version}" >> "$GITHUB_ENV"
+          set -euo pipefail
+          sed -i -E "s/^version:.*/version: ${CHART_VERSION}/" "${CHART_PATH}/Chart.yaml"
+          sed -i -E "s/^appVersion:.*/appVersion: \"backend-${BACKEND_VERSION}.web-${WEB_VERSION}\"/" "${CHART_PATH}/Chart.yaml"
+          sed -i -E "s/^  backendVersion:.*/  backendVersion: \"${BACKEND_VERSION}\"/" "${CHART_PATH}/values.yaml"
+          sed -i -E "s/^  webVersion:.*/  webVersion: \"${WEB_VERSION}\"/" "${CHART_PATH}/values.yaml"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.15.0
 
       - name: Lint chart
-        run: helm lint "$CHART_DIR"
+        run: helm lint "${CHART_PATH}"
 
       - name: Package chart
-        run: helm package "$CHART_DIR" --destination .chart-packages
+        id: package
+        shell: bash
+        run: |
+          mkdir -p .chart-out
+          helm package "${CHART_PATH}" --destination .chart-out
+          package=$(find .chart-out -maxdepth 1 -name '*.tgz' -print -quit)
+          echo "package=${package}" >> "$GITHUB_OUTPUT"
 
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
 
-      - name: Push chart to GHCR
-        run: helm push ".chart-packages/multica-${CHART_VERSION}.tgz" "$OCI_REGISTRY"
-
-      - name: Verify published chart
-        run: helm show chart "$OCI_REGISTRY/multica" --version "$CHART_VERSION"
-
-  # Build the Desktop installers for Linux and Windows and upload them to
-  # the GitHub Release that the `release` job above just published. macOS
-  # Desktop continues to ship via the manual `release-desktop` skill so it
-  # can be signed + notarized with Apple Developer credentials that are
-  # not (yet) wired into CI.
-  desktop:
-    needs: release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: linux
-          - os: windows-latest
-            target: win
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install rpmbuild (Linux)
-        if: matrix.target == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y rpm
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: server/go.mod
-          cache-dependency-path: server/go.sum
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Package Desktop installers (${{ matrix.target }})
-        working-directory: apps/desktop
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # electron-builder's GitHub publisher reads this:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable code signing on Linux/Windows for now — the public
-          # release is unsigned for these platforms, the CLI carries the
-          # trust boundary. Set CSC_LINK in repo secrets to enable
-          # Windows signing later.
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish always
+      - name: Push OCI chart
+        shell: bash
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          helm push "${{ steps.package.outputs.package }}" "oci://ghcr.io/${owner}/charts"

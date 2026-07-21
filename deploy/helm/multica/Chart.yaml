@@ -5,7 +5,7 @@ description: |
   Self-host the backend, frontend, and PostgreSQL (pgvector) on a Kubernetes cluster.
 type: application
 version: 0.1.0
-appVersion: "latest"
+appVersion: "backend-0.4.8.web-0.4.8"
 home: https://multica.ai
 sources:
   - https://github.com/multica-ai/multica

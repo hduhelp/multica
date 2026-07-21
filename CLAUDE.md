@@ -226,8 +226,9 @@ Do not claim verification passed unless you ran it. If you skip checks because t
 ## Commits and Releases
 
 - Commits should be atomic and use conventional prefixes: `feat(scope)`, `fix(scope)`, `refactor(scope)`, `docs`, `test(scope)`, `chore(scope)`.
-- A production deployment requires a CLI release tag on `main`: create `v0.x.x`, push it, and let `release.yml` publish binaries and the Homebrew tap.
-- Bump patch by default unless the user specifies a version.
+- Production service releases are driven by the root `release.yml`: bump the changed `backend` / `web` version and `chart` in the same commit, then push it to `main`. The Release workflow publishes multi-arch images to GHCR and Aliyun ACR, followed by the unified OCI Helm chart.
+- CLI and Desktop releases remain tag-driven: create `v0.x.x` on `main` and push it so `client-release.yml` publishes the public client artifacts.
+- Bump patch versions by default unless the user specifies a version.
 
 ## Domain Reminders
 

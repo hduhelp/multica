@@ -1,4 +1,4 @@
-{{- $backendImageTag := default .Chart.AppVersion .Values.images.backend.tag -}}
+{{- $backendImageTag := default .Values.release.backendVersion .Values.images.backend.tag -}}
 {{- if .Values.backend.uploads.persistence.enabled -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -56,6 +56,10 @@ spec:
         {{- include "multica.labels" . | nindent 8 }}
         app.kubernetes.io/component: backend
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: backend
           image: "{{ .Values.images.backend.repository }}:{{ $backendImageTag }}"

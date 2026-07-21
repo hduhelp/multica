@@ -1,0 +1,17 @@
+# Production release manifest.
+#
+# Bump the image versions that should be rebuilt, bump `chart` in the same
+# commit, and push the commit to main. `.github/workflows/release.yml` publishes
+# the changed images to both GHCR and Aliyun ACR, then publishes the unified OCI
+# Helm chart. Versions must use major.minor.patch without a leading `v`.
+#
+# CLI and Desktop releases remain tag-driven because their public update
+# contract uses `vX.Y.Z` GitHub releases; see client-release.yml.
+#
+# Required Actions secrets (already provided at hduhelp organization level):
+#   ALIYUN_REGISTRY_USERNAME
+#   ALIYUN_REGISTRY_PASSWORD
+
+backend: 0.4.8
+web: 0.4.8
+chart: 0.1.0

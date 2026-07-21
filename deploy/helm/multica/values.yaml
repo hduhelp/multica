@@ -1,16 +1,29 @@
+# Synced from the root release.yml when the Release workflow packages the chart.
+# Individual image tags can still override these defaults.
+release:
+  backendVersion: "0.4.8"
+  webVersion: "0.4.8"
+
+# References to registry credentials already created in the target namespace.
+# The production cluster normally supplies its Aliyun ACR pull secret here.
+imagePullSecrets: []
+# imagePullSecrets:
+#   - name: regcred
+
 # -----------------------------------------------------------------------------
 # Container images
 # -----------------------------------------------------------------------------
 images:
   backend:
-    repository: ghcr.io/multica-ai/multica-backend
-    # Empty defaults to Chart.appVersion. Released OCI charts set appVersion to
-    # the Git tag (for example v0.3.5), so installs use matching app images.
+    # Production pulls from Aliyun ACR. The same image is also published to
+    # ghcr.io/hduhelp/multica-backend for public/self-hosted deployments.
+    repository: registry.ap-northeast-1.aliyuncs.com/hduhelp/multica-backend
+    # Empty defaults to release.backendVersion.
     tag: ""
     pullPolicy: IfNotPresent
   frontend:
-    repository: ghcr.io/multica-ai/multica-web
-    # Empty defaults to Chart.appVersion. Set explicitly to override.
+    repository: registry.ap-northeast-1.aliyuncs.com/hduhelp/multica-web
+    # Empty defaults to release.webVersion.
     tag: ""
     pullPolicy: IfNotPresent
   postgres:
