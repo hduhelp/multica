@@ -177,7 +177,25 @@
     "edit_description_title": "説明を編集",
     "description_placeholder": "このエージェントは何をしますか？",
     "save": "保存",
-    "cancel": "キャンセル"
+    "cancel": "キャンセル",
+    "section_fixed_repo": "固定ディレクトリ",
+    "section_fixed_repo_hint": "タスクごとにチェックアウトせず、接続済みコンピューター上の既存ディレクトリでこのエージェントを直接実行します。ローカルランタイムのみ。",
+    "prop_fixed_repo_enabled": "固定ディレクトリを有効化",
+    "prop_fixed_repo_paths": "ディレクトリ",
+    "fixed_repo_paths_placeholder": "/data/repos/project-a\n/data/repos/project-b",
+    "fixed_repo_paths_hint": "1行に1つの絶対パス、最大 {{max}} 件。各タスクは空いているディレクトリを1つロックしてその場で実行します（クローン・チェックアウトなし）。",
+    "fixed_repo_paths_required": "固定ディレクトリを有効にするには、ディレクトリを1つ以上追加してください。",
+    "fixed_repo_paths_limit": "ディレクトリは最大 {{max}} 件です。",
+    "prop_fixed_repo_vcs_type": "バージョン管理",
+    "fixed_repo_vcs_options": {
+      "git": "Git",
+      "perforce": "Perforce",
+      "none": "なし",
+      "custom": "カスタム"
+    },
+    "prop_fixed_repo_cleanup": "クリーンアップスクリプト",
+    "fixed_repo_cleanup_placeholder": "/path/to/cleanup.sh",
+    "fixed_repo_cleanup_hint": "記録用に保存されます。まだ自動実行されません。"
   },
   "overview": {
     "agent_context": "エージェント",

@@ -185,7 +185,25 @@
     "edit_description_title": "설명 수정",
     "description_placeholder": "이 에이전트는 무엇을 하나요?",
     "save": "저장",
-    "cancel": "취소"
+    "cancel": "취소",
+    "section_fixed_repo": "고정 디렉터리",
+    "section_fixed_repo_hint": "작업마다 새로 체크아웃하지 않고, 연결된 컴퓨터의 기존 디렉터리에서 이 에이전트를 직접 실행합니다. 로컬 런타임 전용.",
+    "prop_fixed_repo_enabled": "고정 디렉터리 사용",
+    "prop_fixed_repo_paths": "디렉터리",
+    "fixed_repo_paths_placeholder": "/data/repos/project-a\n/data/repos/project-b",
+    "fixed_repo_paths_hint": "한 줄에 절대 경로 하나씩, 최대 {{max}}개. 각 작업은 비어 있는 디렉터리 하나를 잠그고 그 자리에서 실행합니다(클론·체크아웃 없음).",
+    "fixed_repo_paths_required": "고정 디렉터리를 사용하려면 디렉터리를 하나 이상 추가하세요.",
+    "fixed_repo_paths_limit": "디렉터리는 최대 {{max}}개입니다.",
+    "prop_fixed_repo_vcs_type": "버전 관리",
+    "fixed_repo_vcs_options": {
+      "git": "Git",
+      "perforce": "Perforce",
+      "none": "없음",
+      "custom": "사용자 지정"
+    },
+    "prop_fixed_repo_cleanup": "정리 스크립트",
+    "fixed_repo_cleanup_placeholder": "/path/to/cleanup.sh",
+    "fixed_repo_cleanup_hint": "참고용으로만 저장되며 아직 자동 실행되지 않습니다."
   },
   "overview": {
     "agent_context": "에이전트",

@@ -185,7 +185,25 @@
     "edit_description_title": "编辑描述",
     "description_placeholder": "这个智能体做什么？",
     "save": "保存",
-    "cancel": "取消"
+    "cancel": "取消",
+    "section_fixed_repo": "固定目录",
+    "section_fixed_repo_hint": "让该智能体直接在已连接电脑上的现有目录中运行，而不是每个任务都重新检出。仅限本地运行时。",
+    "prop_fixed_repo_enabled": "启用固定目录",
+    "prop_fixed_repo_paths": "目录",
+    "fixed_repo_paths_placeholder": "/data/repos/project-a\n/data/repos/project-b",
+    "fixed_repo_paths_hint": "每行一个绝对路径，最多 {{max}} 个。每个任务锁定一个空闲目录并就地运行，不克隆、不检出。",
+    "fixed_repo_paths_required": "请至少添加一个目录以启用固定目录。",
+    "fixed_repo_paths_limit": "最多 {{max}} 个目录。",
+    "prop_fixed_repo_vcs_type": "版本控制",
+    "fixed_repo_vcs_options": {
+      "git": "Git",
+      "perforce": "Perforce",
+      "none": "无",
+      "custom": "自定义"
+    },
+    "prop_fixed_repo_cleanup": "清理脚本",
+    "fixed_repo_cleanup_placeholder": "/path/to/cleanup.sh",
+    "fixed_repo_cleanup_hint": "仅作记录保存，暂不自动执行。"
   },
   "overview": {
     "agent_context": "智能体",

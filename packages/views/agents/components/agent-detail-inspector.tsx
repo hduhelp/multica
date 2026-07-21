@@ -4,12 +4,18 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   Agent,
   AgentRuntime,
+  FixedRepoVcsType,
   MemberWithUser,
 } from "@multica/core/types";
 import { AGENT_DESCRIPTION_MAX_LENGTH } from "@multica/core/agents";
 import { isImeComposing } from "@multica/core/utils";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
+import { Switch } from "@multica/ui/components/ui/switch";
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@multica/ui/components/ui/native-select";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import {
   SettingsCard,
@@ -267,7 +273,200 @@ export function AgentDetailInspector({
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
+
+      {/* Fixed repo mode is a local-runtime-only capability: the agent runs in
+          a pre-existing directory on the daemon host instead of a per-task
+          worktree. Hide the whole section for cloud runtimes where it cannot
+          apply. */}
+      {runtime?.runtime_mode === "local" && (
+        <SettingsSection
+          title={t(($) => $.inspector.section_fixed_repo)}
+          description={t(($) => $.inspector.section_fixed_repo_hint)}
+        >
+          <SettingsCard>
+            <FixedRepoSettings agent={agent} canEdit={canEdit} update={update} />
+          </SettingsCard>
+        </SettingsSection>
+      )}
     </div>
+  );
+}
+
+const FIXED_REPO_VCS_TYPES: FixedRepoVcsType[] = [
+  "git",
+  "perforce",
+  "none",
+  "custom",
+];
+const MAX_FIXED_REPO_PATHS = 16;
+
+function pathsToText(paths: string[] | undefined): string {
+  return (paths ?? []).join("\n");
+}
+
+function textToPaths(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * Fixed repo configuration: an enable toggle plus the path pool, VCS type, and
+ * an (advisory) cleanup script. Only rendered for local runtimes. Each control
+ * persists through the same `update` funnel as the rest of the inspector; the
+ * path list and cleanup script commit on blur, the toggle and VCS select
+ * commit immediately.
+ */
+function FixedRepoSettings({
+  agent,
+  canEdit,
+  update,
+}: {
+  agent: Agent;
+  canEdit: boolean;
+  update: (data: Record<string, unknown>) => Promise<void>;
+}) {
+  const { t } = useT("agents");
+  const enabled = agent.fixed_repo_enabled === true;
+  const [pathsDraft, setPathsDraft] = useState(
+    pathsToText(agent.fixed_repo_paths),
+  );
+  const [cleanupDraft, setCleanupDraft] = useState(
+    agent.fixed_repo_cleanup_script ?? "",
+  );
+
+  useEffect(() => {
+    setPathsDraft(pathsToText(agent.fixed_repo_paths));
+    setCleanupDraft(agent.fixed_repo_cleanup_script ?? "");
+  }, [agent.id, agent.fixed_repo_paths, agent.fixed_repo_cleanup_script]);
+
+  const commitPaths = () => {
+    const next = textToPaths(pathsDraft);
+    // Normalize the textarea to the parsed form so the user sees exactly what
+    // will be saved (blank lines / trailing spaces removed).
+    setPathsDraft(next.join("\n"));
+    const current = agent.fixed_repo_paths ?? [];
+    const changed =
+      next.length !== current.length ||
+      next.some((p, i) => p !== current[i]);
+    if (changed) void update({ fixed_repo_paths: next });
+  };
+
+  const commitCleanup = () => {
+    const trimmed = cleanupDraft.trim();
+    const current = agent.fixed_repo_cleanup_script ?? "";
+    if (trimmed === current) return;
+    // Send null to clear the field so the server resets it (tri-state update).
+    void update({ fixed_repo_cleanup_script: trimmed === "" ? null : trimmed });
+  };
+
+  const parsedCount = textToPaths(pathsDraft).length;
+
+  return (
+    <>
+      <SettingsRow
+        label={t(($) => $.inspector.prop_fixed_repo_enabled)}
+        size="select-wide"
+      >
+        <Switch
+          checked={enabled}
+          disabled={!canEdit}
+          onCheckedChange={(checked) =>
+            update({ fixed_repo_enabled: checked })
+          }
+          aria-label={t(($) => $.inspector.prop_fixed_repo_enabled)}
+        />
+      </SettingsRow>
+
+      {enabled && (
+        <>
+          <SettingsRow
+            label={t(($) => $.inspector.prop_fixed_repo_paths)}
+            align="start"
+          >
+            <div>
+              <Textarea
+                value={pathsDraft}
+                disabled={!canEdit}
+                onChange={(event) => setPathsDraft(event.target.value)}
+                onBlur={commitPaths}
+                rows={4}
+                spellCheck={false}
+                placeholder={t(
+                  ($) => $.inspector.fixed_repo_paths_placeholder,
+                )}
+                aria-label={t(($) => $.inspector.prop_fixed_repo_paths)}
+                className="font-mono text-xs"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t(($) => $.inspector.fixed_repo_paths_hint, {
+                  max: MAX_FIXED_REPO_PATHS,
+                })}
+              </p>
+              {parsedCount === 0 && (
+                <p className="mt-1 text-xs text-destructive">
+                  {t(($) => $.inspector.fixed_repo_paths_required)}
+                </p>
+              )}
+              {parsedCount > MAX_FIXED_REPO_PATHS && (
+                <p className="mt-1 text-xs text-destructive">
+                  {t(($) => $.inspector.fixed_repo_paths_limit, {
+                    max: MAX_FIXED_REPO_PATHS,
+                  })}
+                </p>
+              )}
+            </div>
+          </SettingsRow>
+
+          <SettingsRow
+            label={t(($) => $.inspector.prop_fixed_repo_vcs_type)}
+            size="select-wide"
+          >
+            <NativeSelect
+              value={agent.fixed_repo_vcs_type ?? "git"}
+              disabled={!canEdit}
+              onChange={(event) =>
+                update({
+                  fixed_repo_vcs_type: event.target
+                    .value as FixedRepoVcsType,
+                })
+              }
+              aria-label={t(($) => $.inspector.prop_fixed_repo_vcs_type)}
+            >
+              {FIXED_REPO_VCS_TYPES.map((vcs) => (
+                <NativeSelectOption key={vcs} value={vcs}>
+                  {t(($) => $.inspector.fixed_repo_vcs_options[vcs])}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </SettingsRow>
+
+          <SettingsRow
+            label={t(($) => $.inspector.prop_fixed_repo_cleanup)}
+            align="start"
+          >
+            <div>
+              <Input
+                value={cleanupDraft}
+                disabled={!canEdit}
+                onChange={(event) => setCleanupDraft(event.target.value)}
+                onBlur={commitCleanup}
+                spellCheck={false}
+                placeholder={t(
+                  ($) => $.inspector.fixed_repo_cleanup_placeholder,
+                )}
+                aria-label={t(($) => $.inspector.prop_fixed_repo_cleanup)}
+                className="font-mono text-xs"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t(($) => $.inspector.fixed_repo_cleanup_hint)}
+              </p>
+            </div>
+          </SettingsRow>
+        </>
+      )}
+    </>
   );
 }
 

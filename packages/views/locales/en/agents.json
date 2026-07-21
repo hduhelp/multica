@@ -193,7 +193,25 @@
     "edit_description_title": "Edit description",
     "description_placeholder": "What does this agent do?",
     "save": "Save",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "section_fixed_repo": "Fixed repo",
+    "section_fixed_repo_hint": "Run this agent directly in existing directories on the connected computer instead of a fresh checkout per task. Local runtimes only.",
+    "prop_fixed_repo_enabled": "Enable fixed repo",
+    "prop_fixed_repo_paths": "Directories",
+    "fixed_repo_paths_placeholder": "/data/repos/project-a\n/data/repos/project-b",
+    "fixed_repo_paths_hint": "One absolute path per line, up to {{max}}. Each task locks one free directory and runs in place — no clone or checkout.",
+    "fixed_repo_paths_required": "Add at least one directory to enable fixed repo.",
+    "fixed_repo_paths_limit": "At most {{max}} directories.",
+    "prop_fixed_repo_vcs_type": "Version control",
+    "fixed_repo_vcs_options": {
+      "git": "Git",
+      "perforce": "Perforce",
+      "none": "None",
+      "custom": "Custom"
+    },
+    "prop_fixed_repo_cleanup": "Cleanup script",
+    "fixed_repo_cleanup_placeholder": "/path/to/cleanup.sh",
+    "fixed_repo_cleanup_hint": "Saved for reference. Not run automatically yet."
   },
   "overview": {
     "agent_context": "Agent",
