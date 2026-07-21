@@ -358,6 +358,7 @@ export interface Agent {
   description: string;
   instructions: string;
   avatar_url: string | null;
+  queued_ttl_seconds?: number | null;
   runtime_mode: AgentRuntimeMode;
   runtime_config: Record<string, unknown>;
   custom_args: string[];
@@ -511,6 +512,7 @@ export interface CreateAgentRequest {
   /** Invocation grants — see `AgentInvocationTargetInput`. */
   invocation_targets?: AgentInvocationTargetInput[];
   max_concurrent_tasks?: number;
+  queued_ttl_seconds?: number;
   model?: string;
   fixed_repo_enabled?: boolean;
   fixed_repo_paths?: string[];
@@ -662,6 +664,7 @@ export interface UpdateAgentRequest {
   invocation_targets?: AgentInvocationTargetInput[];
   status?: AgentStatus;
   max_concurrent_tasks?: number;
+  queued_ttl_seconds?: number | null;
   model?: string;
   fixed_repo_enabled?: boolean;
   fixed_repo_paths?: string[];

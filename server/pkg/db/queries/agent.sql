@@ -22,7 +22,8 @@ INSERT INTO agent (
     runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id,
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     composio_toolkit_allowlist, permission_mode,
-    fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script
+    fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script,
+    queued_ttl_seconds
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -32,7 +33,8 @@ INSERT INTO agent (
     COALESCE(sqlc.narg('fixed_repo_enabled'), false),
     COALESCE(sqlc.narg('fixed_repo_paths'), '[]'::jsonb),
     COALESCE(sqlc.narg('fixed_repo_vcs_type'), 'git'),
-    sqlc.narg('fixed_repo_cleanup_script')
+    sqlc.narg('fixed_repo_cleanup_script'),
+    sqlc.narg('queued_ttl_seconds')
 )
 RETURNING *;
 
@@ -88,6 +90,7 @@ UPDATE agent SET
     fixed_repo_paths = COALESCE(sqlc.narg('fixed_repo_paths'), fixed_repo_paths),
     fixed_repo_vcs_type = COALESCE(sqlc.narg('fixed_repo_vcs_type'), fixed_repo_vcs_type),
     fixed_repo_cleanup_script = COALESCE(sqlc.narg('fixed_repo_cleanup_script'), fixed_repo_cleanup_script),
+    queued_ttl_seconds = COALESCE(sqlc.narg('queued_ttl_seconds'), queued_ttl_seconds),
     updated_at = now()
 WHERE id = $1
 RETURNING *;
@@ -118,6 +121,11 @@ RETURNING *;
 
 -- name: ClearAgentFixedRepoCleanupScript :one
 UPDATE agent SET fixed_repo_cleanup_script = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentQueuedTTLSeconds :one
+UPDATE agent SET queued_ttl_seconds = NULL, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -833,12 +841,24 @@ RETURNING *;
 -- the DB when the backlog is large — the sweeper drains the rest on
 -- subsequent ticks.
 WITH victims AS (
-    SELECT id FROM agent_task_queue
-    WHERE status = 'queued'
-      AND created_at < now() - make_interval(secs => @ttl_secs::double precision)
-    ORDER BY created_at ASC
+    SELECT t.id, t.agent_id
+    FROM agent_task_queue t
+    JOIN agent a ON a.id = t.agent_id
+    WHERE t.status = 'queued'
+      AND t.created_at < now() - make_interval(
+        secs => COALESCE(
+            CASE
+                WHEN a.queued_ttl_seconds > 0
+                    AND a.queued_ttl_seconds::text <> 'NaN'
+                    AND a.queued_ttl_seconds NOT IN ('Infinity'::double precision, '-Infinity'::double precision)
+                THEN a.queued_ttl_seconds
+            END,
+            @ttl_secs::double precision
+        )
+      )
+    ORDER BY t.created_at ASC
     LIMIT @max_per_tick::int
-    FOR UPDATE SKIP LOCKED
+    FOR UPDATE OF t SKIP LOCKED
 )
 UPDATE agent_task_queue t
 SET status = 'failed',
@@ -847,9 +867,20 @@ SET status = 'failed',
     failure_reason = 'queued_expired',
     prepare_lease_expires_at = NULL
 FROM victims v
+JOIN agent a ON a.id = v.agent_id
 WHERE t.id = v.id
   AND t.status = 'queued'
-  AND t.created_at < now() - make_interval(secs => @ttl_secs::double precision)
+  AND t.created_at < now() - make_interval(
+    secs => COALESCE(
+        CASE
+            WHEN a.queued_ttl_seconds > 0
+                AND a.queued_ttl_seconds::text <> 'NaN'
+                AND a.queued_ttl_seconds NOT IN ('Infinity'::double precision, '-Infinity'::double precision)
+            THEN a.queued_ttl_seconds
+        END,
+        @ttl_secs::double precision
+    )
+  )
 RETURNING t.*;
 
 -- name: CancelAgentTask :one
