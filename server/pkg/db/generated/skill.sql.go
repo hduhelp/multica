@@ -365,6 +365,47 @@ func (q *Queries) ListAgentSkillsByWorkspace(ctx context.Context, workspaceID pg
 	return items, nil
 }
 
+const listRemoteOriginSkills = `-- name: ListRemoteOriginSkills :many
+SELECT id, workspace_id, name, description, content, config, created_by, created_at, updated_at FROM skill
+WHERE config->'origin'->>'source_url' IS NOT NULL
+  AND config->'origin'->>'source_url' <> ''
+ORDER BY config->>'last_synced_at' ASC NULLS FIRST
+`
+
+// Every skill imported from a URL, across all workspaces. Backs the hourly
+// remote-skill sync job: a skill carries its source in config.origin.source_url
+// when it was imported (skillOriginSourceURL). Ordered oldest-synced first so a
+// catch-up run makes progress on the most stale skills even if it is cut short.
+func (q *Queries) ListRemoteOriginSkills(ctx context.Context) ([]Skill, error) {
+	rows, err := q.db.Query(ctx, listRemoteOriginSkills)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Skill{}
+	for rows.Next() {
+		var i Skill
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.Description,
+			&i.Content,
+			&i.Config,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSkillFiles = `-- name: ListSkillFiles :many
 
 SELECT id, skill_id, path, content, created_at, updated_at FROM skill_file

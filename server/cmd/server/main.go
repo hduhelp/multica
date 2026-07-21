@@ -499,6 +499,12 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
 	}
+	// Hourly refresh of URL-imported skills from their remote origin, so an
+	// imported skill tracks upstream updates without a manual sync. Runs on the
+	// shared DB-backed scheduler (global lease) and never in the task path.
+	if err := schedulerMgr.Register(scheduler.RemoteSkillSyncJob(h.SyncRemoteOriginSkills)); err != nil {
+		slog.Warn("scheduler: failed to register remote_skill_sync job", "error", err)
+	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
 	}()
