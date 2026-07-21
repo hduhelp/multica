@@ -10,6 +10,7 @@ export type {
   Agent,
   AgentStatus,
   AgentRuntimeMode,
+  FixedRepoVcsType,
   AgentVisibility,
   AgentPermissionMode,
   AgentInvocationTarget,
