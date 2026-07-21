@@ -56,6 +56,12 @@ Safari stays on the login page after a successful sign-in.
 
 The first line becomes the title and the rest becomes the description. Sending `/issue` alone creates nothing; the Bot replies with the required format instead.
 
+### Threaded replies
+
+The agent replies onto your message, opening a Feishu topic for that exchange. Follow-ups inside the topic continue the same agent session, so a back-and-forth keeps its context instead of starting over. Once a topic is running the Bot stops re-quoting the parent message.
+
+Reply format follows the result: a short answer comes back as a plain message, a longer one as a formatted card, and a failed run as a separate error card.
+
 ## Manage connections
 
 Open **Settings → Integrations** to view the Bots connected in the workspace. Workspace owners and admins can disconnect them here; an agent's owner can also manage their own Bot from that agent's **Integrations** page.
