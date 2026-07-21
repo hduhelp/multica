@@ -5,7 +5,7 @@ description: Bind a Multica agent to a Lark (飞书) Bot, then talk to it from a
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Bind any [agent](/agents) to a Lark (飞书) Bot and your team can work with it from inside Lark — DM the Bot, @-mention it in a group, or type `/issue` to file a [Multica issue](/issues) without opening the app. The agent's replies stream back into the chat as a live card that updates while it works.
+Bind any [agent](/agents) to a Lark (飞书) Bot and your team can work with it from inside Lark — DM the Bot, @-mention it in a group, or type `/issue` to file a [Multica issue](/issues) without opening the app. The agent replies back in the chat, threaded onto your message so each conversation keeps to its own Lark topic (话题).
 
 Each Bot is bound **one-to-one** to a single Multica agent. Binding a second agent creates a second Bot; one agent never has two Bots.
 
@@ -17,7 +17,7 @@ Each Bot is bound **one-to-one** to a single Multica agent. Binding a second age
 | **DM the Bot** | A workspace member messages the Bot directly in Lark. Each conversation becomes a Multica [chat](/chat) session with the agent; the agent answers in-thread. |
 | **@-mention in a group** | Add the Bot to a Lark group and @-mention it. Only the mentioning message is read — the Bot does not listen to the whole group. |
 | **`/issue` command** | Typing `/issue <title>` (optionally with a body) creates a new Multica issue in the workspace, attributed to you. |
-| **Live reply card** | The Bot posts an interactive card and keeps patching it as the agent runs — progress, the final answer, or an error. |
+| **Threaded reply** | The Bot replies onto your message, opening (or continuing) a Lark topic (话题) so each conversation stays in its own thread. A short answer comes back as a plain message, a richer reply as a formatted card, and a failed run as a distinct error card. |
 
 ## Bind an agent (owner / admin)
 
@@ -46,9 +46,9 @@ Only people who are **members of the workspace** can use the Bot. If you aren't 
 
 ### Chat and `/issue`
 
-- **Ask the agent anything** — DM the Bot or @-mention it in a group. The conversation is a normal agent chat session; the agent replies in the card.
+- **Ask the agent anything** — DM the Bot or @-mention it in a group. The conversation is a normal agent chat session; the agent replies threaded onto your message.
 - **File an issue** — send `/issue Fix the login redirect` and Multica creates that issue in the workspace, assigned the way any new issue would be. Add more lines after the title for a description.
-- **Watch it work** — the reply card patches itself while the agent runs, so you see progress and the result in place.
+- **Stay in context** — each reply threads onto your message, opening or continuing a Lark topic (话题). Follow-ups inside that topic continue the same agent session, so a back-and-forth keeps its context instead of starting over.
 
 If the agent is **offline** (its runtime isn't connected) or **archived**, the Bot replies with a short status notice instead of silently dropping your message.
 
