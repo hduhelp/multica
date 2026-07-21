@@ -207,6 +207,8 @@
       "none": "无",
       "custom": "自定义"
     },
+    "prop_fixed_repo_worktree": "自动 worktree",
+    "fixed_repo_worktree_hint": "仅限 Git。每个 issue 在从该仓库分出的独立临时 worktree 中运行，任务因此可以并行，而不必在同一个目录上排队。需要单个基础仓库；干净检出意味着没有预装的 node_modules 或缓存。",
     "prop_fixed_repo_cleanup": "清理脚本",
     "fixed_repo_cleanup_placeholder": "/path/to/cleanup.sh",
     "fixed_repo_cleanup_hint": "仅作记录保存，暂不自动执行。"

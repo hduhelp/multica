@@ -190,9 +190,16 @@ type Task struct {
 	// `multica repo checkout`. The path is never GC-managed. FixedRepoVcsType
 	// (git/perforce/none/custom) drives VCS-safety guidance in the brief.
 	// FixedRepoCleanupScript is forwarded but NOT executed by the daemon in v1.
-	FixedRepoMode          bool   `json:"fixed_repo_mode,omitempty"`
-	FixedRepoPath          string `json:"fixed_repo_path,omitempty"`
-	FixedRepoVcsType       string `json:"fixed_repo_vcs_type,omitempty"`
+	FixedRepoMode    bool   `json:"fixed_repo_mode,omitempty"`
+	FixedRepoPath    string `json:"fixed_repo_path,omitempty"`
+	FixedRepoVcsType string `json:"fixed_repo_vcs_type,omitempty"`
+	// FixedRepoWorktree: when true, FixedRepoPath is a git repo BASE and this
+	// task runs in its own git worktree branched off it (isolated, parallel)
+	// instead of in-place under the path mutex. Set by the server only for
+	// issue-bound tasks of a worktree-mode agent. The assignment carries it as
+	// the standard local_directory execution mode, so the daemon's existing
+	// worktree machinery handles setup, mutex exemption, GC and cleanup.
+	FixedRepoWorktree      bool   `json:"fixed_repo_worktree,omitempty"`
 	FixedRepoCleanupScript string `json:"fixed_repo_cleanup_script,omitempty"`
 }
 

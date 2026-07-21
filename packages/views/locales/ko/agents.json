@@ -207,6 +207,8 @@
       "none": "없음",
       "custom": "사용자 지정"
     },
+    "prop_fixed_repo_worktree": "자동 worktree",
+    "fixed_repo_worktree_hint": "Git 전용. 각 이슈는 이 저장소에서 분기된 일회용 git worktree에서 실행되어, 하나의 디렉터리에서 대기하지 않고 작업이 병렬로 실행됩니다. 단일 기본 저장소가 필요하며, 깨끗한 체크아웃이므로 미리 빌드된 node_modules나 캐시가 없습니다.",
     "prop_fixed_repo_cleanup": "정리 스크립트",
     "fixed_repo_cleanup_placeholder": "/path/to/cleanup.sh",
     "fixed_repo_cleanup_hint": "참고용으로만 저장되며 아직 자동 실행되지 않습니다."

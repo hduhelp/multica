@@ -59,7 +59,8 @@ INSERT INTO agent (
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     service_tier,
     composio_toolkit_allowlist, permission_mode,
-    fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script
+    fixed_repo_enabled, fixed_repo_paths, fixed_repo_vcs_type, fixed_repo_cleanup_script,
+    fixed_repo_worktree
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -70,7 +71,8 @@ INSERT INTO agent (
     COALESCE(sqlc.narg('fixed_repo_enabled'), false),
     COALESCE(sqlc.narg('fixed_repo_paths'), '[]'::jsonb),
     COALESCE(sqlc.narg('fixed_repo_vcs_type'), 'git'),
-    sqlc.narg('fixed_repo_cleanup_script')
+    sqlc.narg('fixed_repo_cleanup_script'),
+    COALESCE(sqlc.narg('fixed_repo_worktree'), false)
 )
 RETURNING *;
 
@@ -152,6 +154,7 @@ UPDATE agent SET
     fixed_repo_paths = COALESCE(sqlc.narg('fixed_repo_paths'), fixed_repo_paths),
     fixed_repo_vcs_type = COALESCE(sqlc.narg('fixed_repo_vcs_type'), fixed_repo_vcs_type),
     fixed_repo_cleanup_script = COALESCE(sqlc.narg('fixed_repo_cleanup_script'), fixed_repo_cleanup_script),
+    fixed_repo_worktree = COALESCE(sqlc.narg('fixed_repo_worktree'), fixed_repo_worktree),
     updated_at = now()
 WHERE id = $1
 RETURNING *;

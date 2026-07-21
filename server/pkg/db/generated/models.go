@@ -56,6 +56,7 @@ type Agent struct {
 	FixedRepoPaths         []byte      `json:"fixed_repo_paths"`
 	FixedRepoVcsType       string      `json:"fixed_repo_vcs_type"`
 	FixedRepoCleanupScript pgtype.Text `json:"fixed_repo_cleanup_script"`
+	FixedRepoWorktree      bool        `json:"fixed_repo_worktree"`
 }
 
 type AgentBuilderDraft struct {

@@ -67,11 +67,29 @@ func fixedRepoAssignmentForTask(task Task) (*localDirectoryAssignment, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &localDirectoryAssignment{
-		Ref:       localDirectoryRef{LocalPath: absPath, DaemonID: task.RuntimeID},
+	// Worktree mode reuses the daemon's local_directory worktree machinery
+	// wholesale: expressing it as the standard execution mode means
+	// UsesWorktree() drives setup, path-mutex exemption, GC exemption and
+	// cleanup exactly as it does for a worktree-mode project resource, instead
+	// of a second worktree implementation keyed on fixed repo.
+	// Worktree granularity is per issue, so a task with no issue key has nothing
+	// to key a worktree on and must serialize on the path mutex instead of
+	// silently running unisolated. The server already gates the flag on an
+	// issue-bound task; this is the daemon-side backstop.
+	executionMode := localDirectoryModeInPlace
+	if task.FixedRepoWorktree && strings.TrimSpace(task.IssueID) != "" {
+		executionMode = localDirectoryModeWorktree
+	}
+	assignment := &localDirectoryAssignment{
+		Ref: localDirectoryRef{
+			LocalPath:     absPath,
+			DaemonID:      task.RuntimeID,
+			ExecutionMode: executionMode,
+		},
 		AbsPath:   absPath,
 		RealPath:  realPath,
 		FixedRepo: true,
 		VcsType:   normalizeFixedRepoVcsType(task.FixedRepoVcsType),
-	}, nil
+	}
+	return assignment, nil
 }

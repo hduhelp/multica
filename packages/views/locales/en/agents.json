@@ -215,6 +215,8 @@
       "none": "None",
       "custom": "Custom"
     },
+    "prop_fixed_repo_worktree": "Auto worktree",
+    "fixed_repo_worktree_hint": "Git only. Each issue runs in its own throwaway git worktree branched off this repo, so tasks run in parallel instead of queuing on one directory. Needs a single base repo; a clean checkout has no prebuilt node_modules or caches.",
     "prop_fixed_repo_cleanup": "Cleanup script",
     "fixed_repo_cleanup_placeholder": "/path/to/cleanup.sh",
     "fixed_repo_cleanup_hint": "Saved for reference. Not run automatically yet."
