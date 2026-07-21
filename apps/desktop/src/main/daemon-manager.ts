@@ -28,6 +28,7 @@ import {
 import {
   classifyAuthProbe,
   isAuthStatusError,
+  reauthTransientMessage,
   type AuthProbeResult,
 } from "./daemon-auth-probe";
 import { legacyDaemonConflict } from "./daemon-start-conflict";
@@ -313,6 +314,18 @@ async function ensureActiveProfile(): Promise<ActiveProfile> {
 
 function invalidateActiveProfile(): void {
   activeProfile = null;
+}
+
+async function setTargetApiUrl(
+  url: string | null,
+  options: { poll: boolean } = { poll: true },
+): Promise<void> {
+  const normalized = url || null;
+  if (targetApiBaseUrl === normalized) return;
+  console.log(`[daemon] target API URL set to ${normalized ?? "(none)"}`);
+  targetApiBaseUrl = normalized;
+  invalidateActiveProfile();
+  if (options.poll) await pollOnce();
 }
 
 async function fetchHealth(): Promise<DaemonStatus> {
@@ -770,10 +783,6 @@ export type ReauthResult =
   | { ok: false; reason: "session_invalid" }
   | { ok: false; reason: "transient"; message: string };
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /**
  * Recover the local daemon from the "auth_expired" state. Drops the stale
  * cached PAT, mints a fresh one from the current session token, and restarts
@@ -788,14 +797,22 @@ function errorMessage(err: unknown): string {
 async function reauthenticate(
   token: string,
   userId: string,
+  apiBaseUrl?: string,
 ): Promise<ReauthResult> {
+  if (apiBaseUrl) {
+    await setTargetApiUrl(apiBaseUrl, { poll: false });
+  }
   try {
     await clearToken();
     // syncToken mints a fresh PAT because clearToken just removed any cache.
     await syncToken(token, userId);
   } catch (err) {
     if (isAuthStatusError(err)) return { ok: false, reason: "session_invalid" };
-    return { ok: false, reason: "transient", message: errorMessage(err) };
+    return {
+      ok: false,
+      reason: "transient",
+      message: reauthTransientMessage(err, targetApiBaseUrl),
+    };
   }
   const restart = await restartDaemon();
   if (!restart.success) {
@@ -1108,13 +1125,7 @@ export function setupDaemonManager(
   getMainWindow = windowGetter;
 
   ipcMain.handle("daemon:set-target-api-url", async (_e, url: string) => {
-    const normalized = url || null;
-    if (targetApiBaseUrl !== normalized) {
-      console.log(`[daemon] target API URL set to ${normalized ?? "(none)"}`);
-      targetApiBaseUrl = normalized;
-      invalidateActiveProfile();
-      await pollOnce();
-    }
+    await setTargetApiUrl(url);
   });
   ipcMain.handle("daemon:start", () => withGuard(() => startDaemon()));
   ipcMain.handle("daemon:stop", () => withGuard(() => stopDaemon()));
@@ -1132,7 +1143,8 @@ export function setupDaemonManager(
   ipcMain.handle("daemon:clear-token", () => clearToken());
   ipcMain.handle(
     "daemon:reauthenticate",
-    (_event, token: string, userId: string) => reauthenticate(token, userId),
+    (_event, token: string, userId: string, apiBaseUrl?: string) =>
+      reauthenticate(token, userId, apiBaseUrl),
   );
   ipcMain.handle("daemon:is-cli-installed", async () => {
     const bin = await resolveCliBinary();
