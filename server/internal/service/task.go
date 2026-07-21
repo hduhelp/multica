@@ -2290,6 +2290,7 @@ func (s *TaskService) CancelTasksForIssue(ctx context.Context, issueID pgtype.UU
 	for _, agentID := range distinctAgentIDs(cancelled) {
 		s.ReconcileAgentStatus(ctx, agentID)
 	}
+	s.releaseFixedRepoLocks(ctx, cancelled...)
 	s.notifyTasksFinished(cancelled)
 	return nil
 }
@@ -2331,6 +2332,7 @@ func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UU
 	// working→available based on remaining task counts, no need to call
 	// per row (the rows we just cancelled all belong to the same agent).
 	s.ReconcileAgentStatus(ctx, agentID)
+	s.releaseFixedRepoLocks(ctx, cancelled...)
 	s.notifyTasksFinished(cancelled)
 	return cancelled, nil
 }
@@ -2354,6 +2356,7 @@ func (s *TaskService) CancelTasksByTriggerComment(ctx context.Context, commentID
 	for _, agentID := range distinctAgentIDs(cancelled) {
 		s.ReconcileAgentStatus(ctx, agentID)
 	}
+	s.releaseFixedRepoLocks(ctx, cancelled...)
 	s.notifyTasksFinished(cancelled)
 	return cancelled, nil
 }
@@ -2380,6 +2383,7 @@ func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID s
 		s.ReconcileAgentStatus(ctx, t.AgentID)
 		s.publishTaskEvent(protocol.EventTaskCancelled, workspaceID, t)
 	}
+	s.releaseFixedRepoLocks(ctx, cancelled...)
 	s.notifyTasksFinished(cancelled)
 }
 
@@ -2579,6 +2583,7 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 
 	slog.Info("task cancelled", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCancelled(ctx, task)
+	s.releaseFixedRepoLocks(ctx, task)
 	if !opts.QueuedOnly {
 		cancelledChatMessage = s.finalizeCancelledChatMessage(ctx, task, opts)
 	}
@@ -3072,6 +3077,26 @@ func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.
 	})
 }
 
+// errNoFixedRepoCapacity is an internal sentinel used to roll back a claim
+// transaction when a fixed-repo agent has no idle path. It never escapes
+// ClaimTask: callers see a nil task (no-capacity), not this error.
+var errNoFixedRepoCapacity = errors.New("no free fixed repo path")
+
+// releaseFixedRepoLocks best-effort releases any fixed repo path locks held by
+// the given tasks. Used by the non-transactional terminal paths (single/bulk
+// cancel, bulk failure sweep) where the release is not already part of the
+// state-change transaction. Idempotent and safe for non-fixed-repo tasks
+// (0 rows updated); failures are logged, not fatal, so a stuck release never
+// blocks a cancellation — the runtime-offline and agent-disable sweeps are the
+// backstop for any lock left behind.
+func (s *TaskService) releaseFixedRepoLocks(ctx context.Context, tasks ...db.AgentTaskQueue) {
+	for _, t := range tasks {
+		if err := s.Queries.ReleaseFixedRepoLockByTask(ctx, t.ID); err != nil {
+			slog.Warn("failed to release fixed repo lock", "task_id", util.UUIDToString(t.ID), "error", err)
+		}
+	}
+}
+
 // ClaimTask atomically claims the next queued task for an agent on its current
 // runtime, respecting max_concurrent_tasks.
 func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.AgentTaskQueue, error) {
@@ -3163,10 +3188,43 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			reanchorMs = time.Since(t0).Milliseconds()
 		}
 
+		// Fixed repo mode: the task must take exclusive ownership of one of the
+		// agent's configured fixed_repo_paths before it can run, so two tasks
+		// never execute in the same directory. Acquire the lock inside this same
+		// claim transaction: if no path is free the dispatch is rolled back and
+		// the agent is treated as having no capacity (the task stays queued),
+		// exactly like the max_concurrent_tasks gate above.
+		if agent.FixedRepoEnabled {
+			runtimeID := task.RuntimeID
+			if !runtimeID.Valid {
+				runtimeID = agent.RuntimeID
+			}
+			if _, lockErr := qtx.AcquireFixedRepoLock(ctx, db.AcquireFixedRepoLockParams{
+				WorkspaceID: agent.WorkspaceID,
+				AgentID:     agentID,
+				TaskID:      task.ID,
+				RuntimeID:   runtimeID,
+			}); lockErr != nil {
+				if errors.Is(lockErr, pgx.ErrNoRows) {
+					slog.Debug("task claim: no free fixed repo path", "agent_id", util.UUIDToString(agentID))
+					outcome = "no_fixed_repo_path"
+					return errNoFixedRepoCapacity
+				}
+				outcome = "error_fixed_repo_lock"
+				return fmt.Errorf("acquire fixed repo lock: %w", lockErr)
+			}
+		}
+
 		claimedTask := task
 		claimed = &claimedTask
 		return nil
 	})
+	// A claim rolled back because every fixed repo path was busy is a
+	// no-capacity outcome, not an error: the task stays queued for the next
+	// poll once a path frees up.
+	if errors.Is(err, errNoFixedRepoCapacity) {
+		return nil, nil
+	}
 	if err != nil {
 		if outcome == "unknown" {
 			outcome = "error_transaction"
@@ -3928,6 +3986,13 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		}
 		task = t
 
+		// Release any fixed repo path lock this task held (idempotent; a no-op
+		// for non-fixed-repo tasks). Kept in the terminal transaction so the
+		// path frees up atomically with the task reaching its final state.
+		if err := qtx.ReleaseFixedRepoLockByTask(ctx, taskID); err != nil {
+			return fmt.Errorf("release fixed repo lock: %w", err)
+		}
+
 		if t.ChatSessionID.Valid {
 			// Pin the chat_session's runtime_id alongside the session_id so the
 			// next claim can apply the runtime-guard. Both fields move together:
@@ -4406,6 +4471,12 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			return err
 		}
 		task = t
+
+		// Release any fixed repo path lock this task held (idempotent no-op for
+		// non-fixed-repo tasks), atomically with the failure transition.
+		if err := qtx.ReleaseFixedRepoLockByTask(ctx, taskID); err != nil {
+			return fmt.Errorf("release fixed repo lock: %w", err)
+		}
 
 		// Keep resume-unsafe sessions on the task row for observability, but
 		// do not promote them to the chat-level resume pointer.
@@ -5336,6 +5407,10 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 	for _, agentID := range affectedAgents {
 		s.ReconcileAgentStatus(ctx, agentID)
 	}
+	// Release fixed repo path locks for every swept task (offline runtime,
+	// stale/expired). The bulk SQL transitions bypass the single-task terminal
+	// methods, so this is the release point for sweeper-driven failures.
+	s.releaseFixedRepoLocks(ctx, tasks...)
 	s.notifyTasksFinished(tasks)
 	return retried
 }
