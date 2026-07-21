@@ -382,6 +382,12 @@ function FixedRepoSettings({
 }) {
   const { t } = useT("agents");
   const enabled = agent.fixed_repo_enabled === true;
+  // Local draft for the toggle. The server rejects fixed_repo_enabled=true with
+  // empty fixed_repo_paths, so we can't persist the enable the moment the switch
+  // flips — the paths field only appears afterwards. Instead we reveal the
+  // config on the local draft and defer the enable write until paths exist,
+  // committing fixed_repo_enabled and fixed_repo_paths together (see commitPaths).
+  const [enabledDraft, setEnabledDraft] = useState(enabled);
   const [pathsDraft, setPathsDraft] = useState(
     pathsToText(agent.fixed_repo_paths),
   );
@@ -390,20 +396,45 @@ function FixedRepoSettings({
   );
 
   useEffect(() => {
+    setEnabledDraft(enabled);
     setPathsDraft(pathsToText(agent.fixed_repo_paths));
     setCleanupDraft(agent.fixed_repo_cleanup_script ?? "");
-  }, [agent.id, agent.fixed_repo_paths, agent.fixed_repo_cleanup_script]);
+  }, [agent.id, enabled, agent.fixed_repo_paths, agent.fixed_repo_cleanup_script]);
 
   const commitPaths = () => {
     const next = textToPaths(pathsDraft);
     // Normalize the textarea to the parsed form so the user sees exactly what
     // will be saved (blank lines / trailing spaces removed).
     setPathsDraft(next.join("\n"));
+    // Never send an enable with empty paths — the server rejects it and the
+    // required hint already tells the user what's missing.
+    if (next.length === 0) return;
     const current = agent.fixed_repo_paths ?? [];
-    const changed =
+    const pathsChanged =
       next.length !== current.length ||
       next.some((p, i) => p !== current[i]);
-    if (changed) void update({ fixed_repo_paths: next });
+    // First time paths become valid after toggling on: persist the enable and
+    // paths in one write so the coupled invariant holds server-side.
+    if (enabledDraft && !enabled) {
+      void update({ fixed_repo_enabled: true, fixed_repo_paths: next });
+    } else if (pathsChanged) {
+      void update({ fixed_repo_paths: next });
+    }
+  };
+
+  const onToggle = (checked: boolean) => {
+    setEnabledDraft(checked);
+    if (!checked) {
+      // Disabling is always valid; persist immediately.
+      void update({ fixed_repo_enabled: false });
+    } else if (textToPaths(pathsDraft).length > 0) {
+      // Re-enabling when paths are already filled in: persist right away.
+      void update({
+        fixed_repo_enabled: true,
+        fixed_repo_paths: textToPaths(pathsDraft),
+      });
+    }
+    // Otherwise wait for the user to enter paths; commitPaths finishes the enable.
   };
 
   const commitCleanup = () => {
@@ -423,16 +454,14 @@ function FixedRepoSettings({
         size="select-wide"
       >
         <Switch
-          checked={enabled}
+          checked={enabledDraft}
           disabled={!canEdit}
-          onCheckedChange={(checked) =>
-            update({ fixed_repo_enabled: checked })
-          }
+          onCheckedChange={onToggle}
           aria-label={t(($) => $.inspector.prop_fixed_repo_enabled)}
         />
       </SettingsRow>
 
-      {enabled && (
+      {enabledDraft && (
         <>
           <SettingsRow
             label={t(($) => $.inspector.prop_fixed_repo_paths)}
