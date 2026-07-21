@@ -174,19 +174,43 @@ type larkBindingConfig struct {
 
 // larkSessionRouting derives the session-isolation key (stored as
 // channel_chat_id) and the outbound config from one inbound Feishu message.
-// A p2p or plain group chat is one continuous session per chat, so the key is
-// the chat id and the key alone routes outbound (no config). A message inside
-// a Lark topic (话题, thread_id present) is isolated by topic — key =
-// "chat:thread" — so two @bot topics in one group are two sessions (the same
-// model as Slack's channel:threadRoot; see engine.EnsureSessionInput). Pure
-// function so the isolation contract is unit-tested without a DB.
+//
+// A p2p chat is one continuous session per chat, so the key is the chat id and
+// routes outbound alone (no config).
+//
+// A group conversation is isolated by its thread ROOT message — key =
+// "chat:root" — NOT by the topic id. This is what lets the 话题 the bot opens by
+// replying reply_in_thread continue the message that started it: in Lark a
+// bot-created topic is rooted at the triggering message M, so the first
+// top-level @ (which carries no root anchor — it IS the root, so we key on its
+// own message id) and every follow-up inside the topic (which reports root_id =
+// M) collapse to the same "chat:M" key and therefore the same agent session.
+// Two distinct @-threads in one group root on different messages and stay
+// separate, so topic isolation is preserved — this is the same
+// root-of-the-thread model Slack already uses (channel:threadRoot; see
+// engine.EnsureSessionInput). Keying on the topic id instead broke continuity,
+// because the topic only exists AFTER the bot's first reply while the message
+// that opened it was still top-level.
+//
+// Adapted from happyclaw's `rootId ?? messageId` session keying (MIT,
+// riba2534/happyclaw). Pure function so the isolation contract is unit-tested
+// without a DB.
 func larkSessionRouting(msg channel.InboundMessage) (bindingKey string, config []byte) {
 	chatID := msg.Source.ChatID
-	if msg.Source.ChatType != channel.ChatTypeGroup || msg.Source.ThreadID == "" {
+	if msg.Source.ChatType != channel.ChatTypeGroup {
 		return chatID, nil
 	}
+	rootID := ""
+	if msg.ReplyTo != nil {
+		rootID = msg.ReplyTo.RootID
+	}
+	if rootID == "" {
+		// A top-level @ has no root anchor: it is the root of the thread the
+		// bot's reply_in_thread will open, so key on its own message id.
+		rootID = msg.MessageID
+	}
 	cfg, _ := json.Marshal(larkBindingConfig{ChatID: chatID})
-	return chatID + ":" + msg.Source.ThreadID, cfg
+	return chatID + ":" + rootID, cfg
 }
 
 func (r *feishuSessionBinder) EnsureSession(ctx context.Context, p engine.EnsureSessionParams) (pgtype.UUID, error) {

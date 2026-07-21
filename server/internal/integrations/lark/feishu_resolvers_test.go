@@ -48,17 +48,20 @@ func TestFeishuSessionBinder_EnsureSessionMapping(t *testing.T) {
 	if _, err := b.EnsureSession(context.Background(), engine.EnsureSessionParams{
 		Installation: engine.ResolvedInstallation{ID: binderUUID(1), WorkspaceID: binderUUID(2), AgentID: binderUUID(3)},
 		Sender:       binderUUID(7),
-		Message:      channel.InboundMessage{Source: channel.Source{ChatID: "oc_chat", ChatType: channel.ChatTypeGroup}},
+		Message:      channel.InboundMessage{MessageID: "om_open", Source: channel.Source{ChatID: "oc_chat", ChatType: channel.ChatTypeGroup}},
 	}); err != nil {
 		t.Fatalf("EnsureSession: %v", err)
 	}
 
 	got := f.ensureIn
-	if got.BindingKey != "oc_chat" {
-		t.Errorf("BindingKey = %q, want the chat id (plain group: one session per chat)", got.BindingKey)
+	// A top-level group @ opens a new @-thread keyed on its own message id — the
+	// root the bot's reply_in_thread will anchor the topic on.
+	if got.BindingKey != "oc_chat:om_open" {
+		t.Errorf("BindingKey = %q, want chat:root (top-level @ keys on its own message id)", got.BindingKey)
 	}
-	if len(got.BindingConfig) != 0 {
-		t.Errorf("plain group must not set BindingConfig (chat id is the real chat): %q", got.BindingConfig)
+	var cfg larkBindingConfig
+	if err := json.Unmarshal(got.BindingConfig, &cfg); err != nil || cfg.ChatID != "oc_chat" {
+		t.Errorf("composite key must carry the real chat id in config; got %q (err=%v)", got.BindingConfig, err)
 	}
 	if got.WorkspaceID != binderUUID(2) || got.AgentID != binderUUID(3) || got.InstallationID != binderUUID(1) ||
 		got.Sender != binderUUID(7) || got.ChatType != channel.ChatTypeGroup {
@@ -78,16 +81,18 @@ func TestFeishuSessionBinder_TopicMessageIsolatesByThread(t *testing.T) {
 	if _, err := b.EnsureSession(context.Background(), engine.EnsureSessionParams{
 		Installation: engine.ResolvedInstallation{ID: binderUUID(1), WorkspaceID: binderUUID(2), AgentID: binderUUID(3)},
 		Sender:       binderUUID(7),
-		Message: channel.InboundMessage{Source: channel.Source{
-			ChatID: "oc_chat", ChatType: channel.ChatTypeGroup, ThreadID: "omt_topic1",
-		}},
+		Message: channel.InboundMessage{
+			MessageID: "om_followup",
+			Source:    channel.Source{ChatID: "oc_chat", ChatType: channel.ChatTypeGroup, ThreadID: "omt_topic1"},
+			ReplyTo:   &channel.ReplyCtx{RootID: "om_root1"},
+		},
 	}); err != nil {
 		t.Fatalf("EnsureSession: %v", err)
 	}
 
 	got := f.ensureIn
-	if got.BindingKey != "oc_chat:omt_topic1" {
-		t.Errorf("BindingKey = %q, want chat:thread composite (topic isolation)", got.BindingKey)
+	if got.BindingKey != "oc_chat:om_root1" {
+		t.Errorf("BindingKey = %q, want chat:root composite (topic isolated by thread root)", got.BindingKey)
 	}
 	var cfg larkBindingConfig
 	if err := json.Unmarshal(got.BindingConfig, &cfg); err != nil || cfg.ChatID != "oc_chat" {
@@ -95,23 +100,61 @@ func TestFeishuSessionBinder_TopicMessageIsolatesByThread(t *testing.T) {
 	}
 }
 
-// TestLarkSessionRouting unit-tests the pure key-derivation contract.
+// TestLarkSessionRouting unit-tests the pure key-derivation contract. A group
+// conversation is keyed by its thread ROOT message, so the topic the bot opens
+// by replying continues the message that started it.
 func TestLarkSessionRouting(t *testing.T) {
 	cases := []struct {
 		name       string
-		src        channel.Source
+		msg        channel.InboundMessage
 		wantKey    string
 		wantConfig bool
 	}{
-		{"p2p", channel.Source{ChatID: "oc_dm", ChatType: channel.ChatTypeP2P}, "oc_dm", false},
+		{
+			"p2p",
+			channel.InboundMessage{MessageID: "om_dm", Source: channel.Source{ChatID: "oc_dm", ChatType: channel.ChatTypeP2P}},
+			"oc_dm", false,
+		},
 		// p2p never has topics; a stray thread id must not split the DM session.
-		{"p2p with stray thread", channel.Source{ChatID: "oc_dm", ChatType: channel.ChatTypeP2P, ThreadID: "omt_x"}, "oc_dm", false},
-		{"plain group", channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup}, "oc_g", false},
-		{"topic group", channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup, ThreadID: "omt_1"}, "oc_g:omt_1", true},
+		{
+			"p2p with stray thread",
+			channel.InboundMessage{MessageID: "om_dm", Source: channel.Source{ChatID: "oc_dm", ChatType: channel.ChatTypeP2P, ThreadID: "omt_x"}},
+			"oc_dm", false,
+		},
+		// A top-level @ has no root anchor, so it keys on its own message id —
+		// which is exactly the root the bot's reply_in_thread will open the
+		// topic on.
+		{
+			"top-level group @",
+			channel.InboundMessage{MessageID: "om_first", Source: channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup}},
+			"oc_g:om_first", true,
+		},
+		// The follow-up inside the bot-created topic reports root_id = the
+		// original message, so it keys to the SAME session as the top-level @.
+		{
+			"topic follow-up keys to the thread root",
+			channel.InboundMessage{
+				MessageID: "om_second",
+				Source:    channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup, ThreadID: "omt_1"},
+				ReplyTo:   &channel.ReplyCtx{MessageID: "om_first", RootID: "om_first"},
+			},
+			"oc_g:om_first", true,
+		},
+		// A quote-reply to a non-root message inside the topic still keys on the
+		// thread root, not the quoted parent.
+		{
+			"topic quote-reply keys on root, not parent",
+			channel.InboundMessage{
+				MessageID: "om_third",
+				Source:    channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup, ThreadID: "omt_1"},
+				ReplyTo:   &channel.ReplyCtx{MessageID: "om_second", RootID: "om_first"},
+			},
+			"oc_g:om_first", true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			key, config := larkSessionRouting(channel.InboundMessage{Source: tc.src})
+			key, config := larkSessionRouting(tc.msg)
 			if key != tc.wantKey {
 				t.Errorf("bindingKey = %q, want %q", key, tc.wantKey)
 			}
@@ -119,6 +162,22 @@ func TestLarkSessionRouting(t *testing.T) {
 				t.Errorf("config presence = %v, want %v (%q)", len(config) > 0, tc.wantConfig, config)
 			}
 		})
+	}
+
+	// The continuity guarantee, asserted directly: the top-level @ that opens a
+	// conversation and the follow-up inside the topic the bot roots on it derive
+	// the SAME session key. This is the whole point of keying on the root.
+	topLevel, _ := larkSessionRouting(channel.InboundMessage{
+		MessageID: "om_root",
+		Source:    channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup},
+	})
+	topicFollowUp, _ := larkSessionRouting(channel.InboundMessage{
+		MessageID: "om_later",
+		Source:    channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup, ThreadID: "omt_root"},
+		ReplyTo:   &channel.ReplyCtx{RootID: "om_root"},
+	})
+	if topLevel != topicFollowUp {
+		t.Errorf("topic follow-up must continue the opening @'s session: %q != %q", topLevel, topicFollowUp)
 	}
 }
 

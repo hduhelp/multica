@@ -79,63 +79,13 @@ type defaultRenderer struct{}
 func NewDefaultRenderer() Renderer { return &defaultRenderer{} }
 
 func (defaultRenderer) Render(in RenderInput) (CardRender, error) {
-	header := "Multica"
-	if in.AgentName != "" {
-		header = in.AgentName
-	}
-	var body string
-	switch in.Kind {
-	case CardKindThinking:
-		body = "Thinking…"
-	case CardKindRunning:
-		body = "Working on it…"
-	case CardKindFinal:
-		body = in.Content
-		if body == "" {
-			body = "Done."
-		}
-	case CardKindError:
-		body = "Run failed."
-		if in.ErrorMessage != "" {
-			body = "Run failed: " + in.ErrorMessage
-		}
-	default:
-		return CardRender{}, fmt.Errorf("unknown card kind %q", in.Kind)
-	}
-	// update_multi MUST be true on every render: Lark refuses to apply
-	// PatchInteractiveCard to a card whose config does not declare it
-	// a "shared, updatable" card. Since this renderer drives the
-	// thinking → streaming → final/error lifecycle (the card is sent
-	// once and patched multiple times), an absent update_multi causes
-	// every patch after the first send to silently no-op on the
-	// Lark side while the local outbound status row still flips to
-	// streaming/final. Keep this on every kind — including thinking
-	// and error — because that initial JSON IS the body Lark stores
-	// and consults for subsequent patches.
-	doc := map[string]any{
-		"config": map[string]any{
-			"wide_screen_mode": true,
-			"update_multi":     true,
-		},
-		"header": map[string]any{
-			"template": "blue",
-			"title":    map[string]any{"tag": "plain_text", "content": header},
-		},
-		"elements": []any{
-			map[string]any{
-				"tag": "div",
-				"text": map[string]any{
-					"tag":     "plain_text",
-					"content": body,
-				},
-			},
-		},
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		return CardRender{}, err
-	}
-	return CardRender{JSON: string(raw)}, nil
+	// The production card is the status-coloured, markdown-rendering
+	// schema-2.0 card in agent_reply_card.go. Keeping the Renderer indirection
+	// lets tests substitute a stub and lets a future template swap in without
+	// touching the patcher's transport / DB logic. update_multi is set inside
+	// buildAgentReplyCard so a sent card stays patchable across the streaming
+	// lifecycle.
+	return buildAgentReplyCard(in)
 }
 
 // PatcherQueries is the narrow subset of *db.Queries the Patcher
@@ -378,6 +328,12 @@ func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentia
 	if content == "" {
 		return nil
 	}
+	// A finished reply should feel like a normal IM message, not a titled status
+	// card. Plain prose goes out as msg_type=text; only markdown rides a
+	// HEADERLESS schema-2.0 card so Lark renders the formatting. Neither shows a
+	// header/title bar — the status header is reserved for the failure path
+	// (fail), where the visual distinction earns its chrome. Both route through
+	// threadReplyTarget so the reply threads off the user's message.
 	target := threadReplyTarget(binding)
 	if containsMarkdown(content) {
 		return sendWithThreadFallback(p.cfg.Logger, "send markdown card", target, func(t ReplyTarget) error {
@@ -401,6 +357,59 @@ func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentia
 	})
 }
 
+// sendAgentReply delivers one agent reply as the rich status card. The card is
+// already table-safe (buildAgentReplyCard runs downgradeMarkdownTablesForLark),
+// so — unlike happyclaw's post+md fallback (MIT, riba2534/happyclaw), which
+// exists because raw interactive cards hit Lark's table-element cap — the send
+// path does NOT retry with a different format when the card SEND fails: a blind
+// re-send on an ambiguous "the server may have received it" error would
+// duplicate the reply. The only fallback is for a card BUILD error (no send
+// happened): degrade to a plain markdown/text send. Thread→chat-level downgrade
+// for a classified thread-unsupported rejection is still handled inside
+// sendWithThreadFallback.
+func (p *Patcher) sendAgentReply(ctx context.Context, creds InstallationCredentials, chatID ChatID, target ReplyTarget, in RenderInput) error {
+	card, err := p.cfg.Renderer.Render(in)
+	if err != nil {
+		p.cfg.Logger.Warn("lark: agent card build failed, sending plain reply", "error", err)
+		return p.sendPlainReply(ctx, creds, chatID, target, cardBody(in))
+	}
+	return sendWithThreadFallback(p.cfg.Logger, "send agent card", target, func(t ReplyTarget) error {
+		_, e := p.client.SendInteractiveCard(ctx, SendCardParams{
+			InstallationID: creds,
+			ChatID:         chatID,
+			CardJSON:       card.JSON,
+			ReplyTarget:    t,
+		})
+		return e
+	})
+}
+
+// sendPlainReply is the card-build-failure degrade path: a markdown reply keeps
+// its formatting via the schema-2.0 markdown card, plain prose goes out as a
+// text message. Both route through sendWithThreadFallback.
+func (p *Patcher) sendPlainReply(ctx context.Context, creds InstallationCredentials, chatID ChatID, target ReplyTarget, body string) error {
+	if containsMarkdown(body) {
+		return sendWithThreadFallback(p.cfg.Logger, "send markdown card", target, func(t ReplyTarget) error {
+			_, e := p.client.SendMarkdownCard(ctx, SendMarkdownCardParams{
+				InstallationID: creds,
+				ChatID:         chatID,
+				Markdown:       body,
+				ReplyTarget:    t,
+			})
+			return e
+		})
+	}
+	return sendWithThreadFallback(p.cfg.Logger, "send text message", target, func(t ReplyTarget) error {
+		_, e := p.client.SendTextMessage(ctx, SendTextParams{
+			InstallationID: creds,
+			ChatID:         chatID,
+			Text:           body,
+			ReplyTarget:    t,
+		})
+		return e
+	})
+}
+
 // outboundChatID recovers the real Lark chat id from the chat binding. The
 // channel_chat_id may be a composite "chat:thread" topic-isolation key, so
 // the real chat id is read from the binding config (larkBindingConfig);
@@ -417,15 +426,23 @@ func outboundChatID(b ChatSessionBinding) ChatID {
 }
 
 // threadReplyTarget derives the outbound reply target from the chat
-// binding's most-recent inbound trigger. We thread the reply ONLY when
-// that trigger was itself inside a Lark topic (last_lark_thread_id
-// present): normal group / p2p chats keep the unchanged chat-level send
-// path, and only an @-mention that happened inside a thread gets a
-// threaded reply (replying to last_lark_message_id with reply_in_thread).
-// The zero ReplyTarget means "send at the chat level".
+// binding's most-recent inbound trigger. Adapted from happyclaw's Feishu
+// routing (MIT, riba2534/happyclaw): the reply always anchors to the latest
+// inbound message with reply_in_thread, so it quotes the user and opens (or
+// continues) a Lark 话题:
+//
+//   - Normal group @mention → reply on last_lark_message_id with
+//     reply_in_thread → the reply quotes the trigger and starts a topic.
+//   - Inside a topic → the trigger already lives in the topic, so the same
+//     reply_in_thread reply stays inside it.
+//   - Session with no recorded trigger (last_lark_message_id empty) → the zero
+//     ReplyTarget falls through to a fresh message.create.
+//
+// sendWithThreadFallback downgrades to a chat-level send if Lark rejects the
+// threaded reply (topic recalled / disabled / aggregated), so a reply is never
+// silently lost.
 func threadReplyTarget(binding ChatSessionBinding) ReplyTarget {
-	if binding.LastThreadID.Valid && binding.LastThreadID.String != "" &&
-		binding.LastMessageID.Valid && binding.LastMessageID.String != "" {
+	if binding.LastMessageID.Valid && binding.LastMessageID.String != "" {
 		return ReplyTarget{MessageID: binding.LastMessageID.String, InThread: true}
 	}
 	return ReplyTarget{}
@@ -495,23 +512,11 @@ func (p *Patcher) installationCredentials(inst Installation) (InstallationCreden
 // time we'd just send a second card, which is fine — failure is
 // usually a single terminal event.
 func (p *Patcher) fail(ctx context.Context, creds InstallationCredentials, binding ChatSessionBinding, taskID pgtype.UUID, agentName string, payload any) error {
-	render, err := p.cfg.Renderer.Render(RenderInput{
+	return p.sendAgentReply(ctx, creds, outboundChatID(binding), threadReplyTarget(binding), RenderInput{
 		Kind:         CardKindError,
 		AgentName:    agentName,
 		TaskID:       taskID,
 		ErrorMessage: errorMessageFromPayload(payload),
-	})
-	if err != nil {
-		return fmt.Errorf("render error card: %w", err)
-	}
-	return sendWithThreadFallback(p.cfg.Logger, "send error card", threadReplyTarget(binding), func(t ReplyTarget) error {
-		_, err := p.client.SendInteractiveCard(ctx, SendCardParams{
-			InstallationID: creds,
-			ChatID:         outboundChatID(binding),
-			CardJSON:       render.JSON,
-			ReplyTarget:    t,
-		})
-		return err
 	})
 }
 

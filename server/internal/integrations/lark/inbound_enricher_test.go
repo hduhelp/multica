@@ -154,6 +154,40 @@ func TestEnrichQuotedReply(t *testing.T) {
 	}
 }
 
+// TestEnrichSkipsQuotedParentInsideTopic pins the continuity optimization: a
+// reply INSIDE a 话题 (ThreadID set) does not inline its parent as a
+// <quoted_message> block, because the topic continues one agent session and the
+// parent is already in that session's history. Re-injecting it would double the
+// context and leak the raw block into the transcript. The parent is not even
+// fetched — no wasted GetMessage call.
+func TestEnrichSkipsQuotedParentInsideTopic(t *testing.T) {
+	t.Parallel()
+	fake := newEnricherFake()
+	fake.byID["om_parent"] = []LarkMessage{
+		textMsg("om_parent", "ou_jiayuan", "我叫 junyi", "1000"),
+	}
+	in := InboundMessage{
+		MessageType: "text",
+		MessageID:   "om_child",
+		Body:        "我叫什么",
+		ParentID:    "om_parent",
+		RootID:      "om_parent",
+		ThreadID:    "omt_topic1",
+	}
+
+	out := enrich(t, fake, in, InboundEnricherConfig{})
+
+	if out.Body != "我叫什么" {
+		t.Errorf("in-topic reply must pass through without a quoted block; got %q", out.Body)
+	}
+	if strings.Contains(out.Body, "<quoted_message") {
+		t.Errorf("in-topic reply must NOT inline a quoted_message block; got %q", out.Body)
+	}
+	if len(fake.calls) != 0 {
+		t.Errorf("in-topic parent must not be fetched; got calls %v", fake.calls)
+	}
+}
+
 // TestEnrichMergeForward covers the merge_forward example: the forwarded
 // transcript is fetched via GetMessage(forward_id) — whose items[] are
 // [sentinel, child…] — and inlined as a <forwarded_messages> block with
