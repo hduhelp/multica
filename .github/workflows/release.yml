@@ -118,9 +118,29 @@ jobs:
           echo "web_changed=$web_changed" >> "$GITHUB_OUTPUT"
           echo "chart_changed=$chart_changed" >> "$GITHUB_OUTPUT"
 
+  registry-preflight:
+    name: Validate Registry Credentials
+    needs: detect
+    if: >
+      needs.detect.outputs.backend_changed == 'true' ||
+      needs.detect.outputs.web_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Aliyun ACR credentials
+        shell: bash
+        env:
+          ACR_USERNAME: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ACR_USERNAME" || -z "$ACR_PASSWORD" ]]; then
+            echo "::error::Grant hduhelp/multica access to the organization Actions secrets ALIYUN_REGISTRY_USERNAME and ALIYUN_REGISTRY_PASSWORD."
+            exit 1
+          fi
+
   backend-build:
     name: Build Backend (${{ matrix.platform }})
-    needs: detect
+    needs: [detect, registry-preflight]
     if: needs.detect.outputs.backend_changed == 'true' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
@@ -221,7 +241,7 @@ jobs:
 
   web-build:
     name: Build Web (${{ matrix.platform }})
-    needs: detect
+    needs: [detect, registry-preflight]
     if: needs.detect.outputs.web_changed == 'true' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
@@ -322,12 +342,14 @@ jobs:
 
   helm-chart:
     name: Publish Helm Chart
-    needs: [detect, backend-publish, web-publish]
+    needs: [detect, backend-build, backend-publish, web-build, web-publish]
     if: >
       always() &&
       needs.detect.outputs.chart_changed == 'true' &&
-      (needs.backend-publish.result == 'success' || needs.backend-publish.result == 'skipped') &&
-      (needs.web-publish.result == 'success' || needs.web-publish.result == 'skipped') &&
+      (needs.detect.outputs.backend_changed != 'true' ||
+        (needs.backend-build.result == 'success' && needs.backend-publish.result == 'success')) &&
+      (needs.detect.outputs.web_changed != 'true' ||
+        (needs.web-build.result == 'success' && needs.web-publish.result == 'success')) &&
       github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
