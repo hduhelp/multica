@@ -101,12 +101,18 @@ var claudeEffortLabel = map[string]string{
 // model → use the parsed superset as-is (current Claude Code default).
 // Update this map when Anthropic publishes a new model that does not
 // support `xhigh` / `max`.
+// Per Anthropic's effort docs (platform.claude.com/docs/en/build-with-claude/effort):
+//   - xhigh: Fable 5, Opus 4.8, Opus 4.7, Sonnet 5 (NOT Opus 4.6, NOT Sonnet 4.6 —
+//     xhigh on Opus 4.6 silently degrades to high — and NOT Haiku).
+//   - max:   all effort-capable models except Haiku.
+//
+// The `claude --help` list advertises the full superset regardless of the
+// selected model, so we filter per model here to avoid injecting an --effort
+// value the model would silently drop or the CLI would reject.
 var claudeModelEffortAllow = map[string]map[string]bool{
-	// Opus is the only model that publicly supports xhigh; the help
-	// list still includes it for Sonnet / Haiku so we filter here.
 	"claude-opus-4-8":           {"low": true, "medium": true, "high": true, "xhigh": true, "max": true},
 	"claude-opus-4-7":           {"low": true, "medium": true, "high": true, "xhigh": true, "max": true},
-	"claude-opus-4-6":           {"low": true, "medium": true, "high": true, "xhigh": true, "max": true},
+	"claude-opus-4-6":           {"low": true, "medium": true, "high": true, "max": true},
 	"claude-sonnet-4-6":         {"low": true, "medium": true, "high": true, "max": true},
 	"claude-sonnet-4-5":         {"low": true, "medium": true, "high": true, "max": true},
 	"claude-haiku-4-5-20251001": {"low": true, "medium": true, "high": true},
