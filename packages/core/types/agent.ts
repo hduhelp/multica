@@ -783,6 +783,25 @@ export interface SkillImportMultiple {
 
 export type SkillImportOutcome = Skill | SkillImportMultiple;
 
+/** Per-URL outcome from a batch import. `result.status` is one of
+ * created|updated|skipped|conflict|failed. */
+export interface SkillBatchImportItem {
+  url: string;
+  result: {
+    status: string;
+    reason?: string;
+    skill?: Skill;
+  };
+}
+
+/** Response from importing a set of skill URLs in one request. */
+export interface SkillBatchImportResponse {
+  results: SkillBatchImportItem[];
+  created: number;
+  skipped: number;
+  failed: number;
+}
+
 export interface SkillFile {
   id: string;
   skill_id: string;

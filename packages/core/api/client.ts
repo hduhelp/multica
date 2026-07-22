@@ -46,6 +46,7 @@ import type {
   User,
   Skill,
   SkillImportOutcome,
+  SkillBatchImportResponse,
   SkillSummary,
   CreateSkillRequest,
   UpdateSkillRequest,
@@ -1937,6 +1938,16 @@ export class ApiClient {
 
   async importSkill(data: { url: string }): Promise<SkillImportOutcome> {
     return this.fetch("/api/skills/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async importSkillsBatch(data: {
+    urls: string[];
+    on_conflict?: "skip" | "overwrite" | "rename";
+  }): Promise<SkillBatchImportResponse> {
+    return this.fetch("/api/skills/import/batch", {
       method: "POST",
       body: JSON.stringify(data),
     });

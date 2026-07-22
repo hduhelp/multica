@@ -255,7 +255,8 @@
       "select_all": "모두 선택",
       "select_none": "지우기",
       "import_selected": "선택 항목 가져오기 ({{count}})",
-      "toast_imported_bulk": "{{count}}개의 스킬을 가져왔습니다"
+      "toast_imported_bulk": "{{count}}개의 스킬을 가져왔습니다",
+      "toast_all_skipped": "선택한 {{count}}개의 스킬이 모두 이미 존재합니다"
     }
   },
   "runtime_import": {
