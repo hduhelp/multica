@@ -57,3 +57,34 @@ func TestInMemoryRuntimeCommandStoreLifecycle(t *testing.T) {
 		t.Fatalf("after fail: %+v", g2)
 	}
 }
+
+// TestPendingRuntimeCommandForHeartbeat verifies the heartbeat attach maps a
+// popped command to the matching pending action (the server→daemon wiring).
+func TestPendingRuntimeCommandForHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	h := &Handler{RuntimeCommandStore: NewInMemoryRuntimeCommandStore()}
+
+	// Nothing pending → both nil.
+	if r, l := h.pendingRuntimeCommandForHeartbeat(ctx, "rt1"); r != nil || l != nil {
+		t.Fatalf("expected no pending, got restart=%v logs=%v", r, l)
+	}
+
+	// A restart command → PendingRestart carrying Force.
+	rc, _ := h.RuntimeCommandStore.Create(ctx, &RuntimeCommand{RuntimeID: "rt1", Kind: RuntimeCommandRestart, Force: true})
+	restart, logs := h.pendingRuntimeCommandForHeartbeat(ctx, "rt1")
+	if logs != nil || restart == nil || restart.ID != rc.ID || !restart.Force {
+		t.Fatalf("restart map wrong: restart=%+v logs=%v", restart, logs)
+	}
+	// It was claimed (running), so a second probe finds nothing.
+	if r, l := h.pendingRuntimeCommandForHeartbeat(ctx, "rt1"); r != nil || l != nil {
+		t.Fatalf("command should be claimed already")
+	}
+
+	// A logs command → PendingLogFetch carrying Lines.
+	h.RuntimeCommandStore.Complete(ctx, rc.ID, "")
+	lc, _ := h.RuntimeCommandStore.Create(ctx, &RuntimeCommand{RuntimeID: "rt1", Kind: RuntimeCommandLogs, Lines: 321})
+	restart, logs = h.pendingRuntimeCommandForHeartbeat(ctx, "rt1")
+	if restart != nil || logs == nil || logs.ID != lc.ID || logs.Lines != 321 {
+		t.Fatalf("logs map wrong: restart=%v logs=%+v", restart, logs)
+	}
+}
