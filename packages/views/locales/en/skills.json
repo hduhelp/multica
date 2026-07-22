@@ -6,10 +6,22 @@
     "new_skill": "New skill",
     "search_placeholder": "Search skills…",
     "scopes": {
-      "all": { "label": "All", "description": "All skills in this workspace" },
-      "used": { "label": "In use", "description": "Skills assigned to at least one agent" },
-      "unused": { "label": "Unused", "description": "Skills not assigned to any agent" },
-      "mine": { "label": "Created by me", "description": "Skills you created" }
+      "all": {
+        "label": "All",
+        "description": "All skills in this workspace"
+      },
+      "used": {
+        "label": "In use",
+        "description": "Skills assigned to at least one agent"
+      },
+      "unused": {
+        "label": "Unused",
+        "description": "Skills not assigned to any agent"
+      },
+      "mine": {
+        "label": "Created by me",
+        "description": "Skills you created"
+      }
     },
     "empty": {
       "title": "No skills yet",
@@ -244,7 +256,13 @@
       "name_conflict_hint": " The imported skill's name already exists — delete the existing one before retrying.",
       "fallback_error": "Import failed",
       "cancel": "Cancel",
-      "toast_imported": "Skill imported"
+      "toast_imported": "Skill imported",
+      "import_partial_failed": "{{count}} skill(s) failed to import:",
+      "directory_hint": "This is a directory of {{count}} skills. Pick which to import:",
+      "select_all": "Select all",
+      "select_none": "Clear",
+      "import_selected": "Import selected ({{count}})",
+      "toast_imported_bulk": "Imported {{count}} skills"
     }
   },
   "runtime_import": {

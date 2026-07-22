@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -110,6 +111,12 @@ type SkillImportResult struct {
 	Reason        string                  `json:"reason,omitempty"`
 	Skill         *SkillWithFilesResponse `json:"skill,omitempty"`
 	ExistingSkill *ExistingSkillIdentity  `json:"existing_skill,omitempty"`
+	// Candidates is populated with Status=="multiple" when the import URL points
+	// at a directory that is NOT a single skill but a container of them (no
+	// SKILL.md at that path, but immediate subdirectories each have one). The
+	// client presents these for the user to pick which to import; each
+	// candidate URL re-imports as a normal single skill.
+	Candidates []SkillSearchCandidateResponse `json:"candidates,omitempty"`
 }
 
 type ExistingSkillIdentity struct {
@@ -1753,6 +1760,99 @@ func fetchFromGitHub(httpClient *http.Client, rawURL string) (*importedSkill, er
 	return result, nil
 }
 
+// discoverGitHubDirectorySkills lists the immediate sub-skills of a GitHub
+// directory that is a CONTAINER of skills rather than a single skill — i.e. the
+// pointed directory has no SKILL.md of its own, but one or more of its immediate
+// subdirectories do. It returns one candidate per such subdirectory, each with a
+// re-importable /tree/<ref>/<dir>/<sub> URL, so the client can let the user pick
+// which to import. Returns an empty slice (no error) when the directory is not a
+// multi-skill container, so the caller can fall back to the single-skill error.
+//
+// Uses one recursive git-trees request rather than N per-subdirectory contents
+// calls, to stay within GitHub's unauthenticated rate limit on large repos.
+func discoverGitHubDirectorySkills(httpClient *http.Client, rawURL string) ([]SkillSearchCandidateResponse, error) {
+	spec, err := parseGitHubURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if len(spec.refSegments) > 0 {
+		if err := resolveGitHubRefAndPath(httpClient, &spec); err != nil {
+			return nil, err
+		}
+	}
+	if spec.ref == "" {
+		spec.ref = fetchGitHubDefaultBranch(httpClient, spec.owner, spec.repo)
+	}
+
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1",
+		url.PathEscape(spec.owner), url.PathEscape(spec.repo), url.PathEscape(spec.ref))
+	resp, err := doGitHubAPIGet(httpClient, apiURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github tree listing returned status %d", resp.StatusCode)
+	}
+	var tree githubTreeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tree); err != nil {
+		return nil, fmt.Errorf("decode github tree: %w", err)
+	}
+
+	prefix := ""
+	if spec.skillDir != "" {
+		prefix = spec.skillDir + "/"
+	}
+	subs := immediateSubSkillDirs(extractSkillMdPaths(tree.Tree), prefix)
+	candidates := make([]SkillSearchCandidateResponse, 0, len(subs))
+	for _, sub := range subs {
+		candidates = append(candidates, SkillSearchCandidateResponse{
+			Name:   sub,
+			URL:    buildGitHubTreeURL(spec.owner, spec.repo, spec.ref, prefix+sub),
+			Source: "github.com",
+		})
+	}
+	return candidates, nil
+}
+
+// immediateSubSkillDirs returns the sorted, de-duplicated names of directories
+// directly under prefix that contain a SKILL.md — i.e. the sub-skills of a
+// container directory. skillMdPaths are repo-relative SKILL.md paths (from
+// extractSkillMdPaths); prefix is the container dir with a trailing slash, or ""
+// at the repo root. A SKILL.md nested deeper than one level under prefix (a
+// skill's own reference dir, say) is not a sub-skill and is skipped, as is the
+// container's own SKILL.md (rest has no slash).
+func immediateSubSkillDirs(skillMdPaths []string, prefix string) []string {
+	seen := map[string]bool{}
+	subs := make([]string, 0)
+	for _, p := range skillMdPaths {
+		rest, ok := strings.CutPrefix(p, prefix)
+		if !ok {
+			continue
+		}
+		sub, file, ok := strings.Cut(rest, "/")
+		if !ok || file != "SKILL.md" || sub == "" || seen[sub] {
+			continue
+		}
+		seen[sub] = true
+		subs = append(subs, sub)
+	}
+	sort.Strings(subs)
+	return subs
+}
+
+// buildGitHubTreeURL builds a canonical github.com/<owner>/<repo>/tree/<ref>/<path>
+// URL that round-trips through parseGitHubURL. Each path segment is escaped so
+// names with spaces or reserved characters re-import correctly.
+func buildGitHubTreeURL(owner, repo, ref, repoPath string) string {
+	segs := strings.Split(repoPath, "/")
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/tree/%s/%s",
+		url.PathEscape(owner), url.PathEscape(repo), escapeRefPath(ref), strings.Join(segs, "/"))
+}
+
 // --- Shared helpers ---
 
 // rawGitHubContentHost serves raw GitHub file content. fetchRawFile attaches the
@@ -2014,6 +2114,16 @@ func (h *Handler) ImportSkill(w http.ResponseWriter, r *http.Request) {
 		imported, err = fetchFromSkillsSh(httpClient, normalized)
 	case sourceGitHub:
 		imported, err = fetchFromGitHub(httpClient, normalized)
+		if err != nil {
+			// The URL may point at a directory that CONTAINS skills rather than
+			// being one skill (no SKILL.md there, but subdirectories have one).
+			// Surface the discovered sub-skills so the client can let the user
+			// pick which to import, instead of failing.
+			if candidates, derr := discoverGitHubDirectorySkills(httpClient, normalized); derr == nil && len(candidates) > 0 {
+				writeJSON(w, http.StatusOK, SkillImportResult{Status: "multiple", Candidates: candidates})
+				return
+			}
+		}
 	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())

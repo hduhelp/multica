@@ -249,7 +249,13 @@
       "name_conflict_hint": "导入的 skill 名称已存在——请先删除已有的再重试。",
       "fallback_error": "导入失败",
       "cancel": "取消",
-      "toast_imported": "已导入 skill"
+      "toast_imported": "已导入 skill",
+      "import_partial_failed": "{{count}} 个技能导入失败：",
+      "directory_hint": "这是一个包含 {{count}} 个技能的目录，请勾选要导入的：",
+      "select_all": "全选",
+      "select_none": "清空",
+      "import_selected": "导入所选（{{count}}）",
+      "toast_imported_bulk": "已导入 {{count}} 个技能"
     }
   },
   "runtime_import": {
