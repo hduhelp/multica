@@ -763,6 +763,26 @@ export interface Skill extends SkillSummary {
   files: SkillFile[];
 }
 
+/** One sub-skill discovered when an import URL points at a directory that
+ * CONTAINS skills rather than being one skill. `url` re-imports that single
+ * skill. */
+export interface SkillImportCandidate {
+  name: string;
+  url: string;
+  source: string;
+  description?: string;
+}
+
+/** Returned by importSkill when the URL is a container directory: the caller
+ * presents `candidates` for the user to choose which to import. Discriminated
+ * from a normal `Skill` result by `status === "multiple"`. */
+export interface SkillImportMultiple {
+  status: "multiple";
+  candidates: SkillImportCandidate[];
+}
+
+export type SkillImportOutcome = Skill | SkillImportMultiple;
+
 export interface SkillFile {
   id: string;
   skill_id: string;
