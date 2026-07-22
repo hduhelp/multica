@@ -46,6 +46,15 @@ var legacyDuplicateMigrationStems = map[string][]string{
 	"124": {"124_autopilot_run_planned_at", "124_channel_generalization", "124_task_prepare_lease"},
 	"127": {"127_issue_pull_request_reference_only", "127_task_squad_id", "127_user_composio_connection"},
 	"128": {"128_agent_task_queue_runtime_mcp_overlay", "128_autopilot_collaborator", "128_comment_routing_escalation"},
+	// Fork-only collisions: parallel feature branches (fixed-repo, chat/channel,
+	// issue-status, runtime-profile, runtime-binding) independently reused these
+	// numbers and were merged to this fork's main without renumbering. They are
+	// already applied, so they are grandfathered here rather than renumbered.
+	"203": {"203_agent_fixed_repo_lock", "203_chat_message_channel_media_pending"},
+	"204": {"204_agent_fixed_repo_lock_active_path_index", "204_chat_message_channel_ingested"},
+	"208": {"208_issue_status_id_column", "208_runtime_profile_add_qwen"},
+	"209": {"209_agent_runtime_binding", "209_issue_status_id_index"},
+	"210": {"210_agent_runtime_binding_runtime_index", "210_agent_task_dispatched_autopilot_run"},
 }
 
 var migrationPrefixPattern = regexp.MustCompile(`^(\d+)_`)
