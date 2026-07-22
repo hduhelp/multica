@@ -75,6 +75,7 @@ import type {
   DashboardRunTimeDaily,
   DashboardFailureDaily,
   DashboardFailureByAgent,
+  RuntimeCommand,
   RuntimeUpdate,
   RuntimeModelListRequest,
   RuntimeLocalSkillListRequest,
@@ -407,6 +408,8 @@ import {
   EMPTY_SKILL,
   SkillBatchImportResponseSchema,
   EMPTY_SKILL_BATCH_IMPORT,
+  RuntimeCommandSchema,
+  EMPTY_RUNTIME_COMMAND,
   IssueViewSchema,
   IssueViewListSchema,
   IssueViewPreferenceSchema,
@@ -2163,6 +2166,37 @@ export class ApiClient {
   // than cast: an unparseable body degrades to an explicit "failed" record that
   // shows the discovery error and keeps manual model entry usable, instead of a
   // fabricated empty catalog or an endless spinner (MUL-5444).
+
+  // Remote daemon control. Each call parks a command for the runtime to pick up
+  // on its next heartbeat and returns the command record to poll.
+  async restartRuntime(runtimeId: string, force = false): Promise<RuntimeCommand> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/restart`, {
+      method: "POST",
+      body: JSON.stringify({ force }),
+    });
+    return parseWithFallback(raw, RuntimeCommandSchema, EMPTY_RUNTIME_COMMAND, {
+      endpoint: "POST /api/runtimes/:id/restart",
+    });
+  }
+
+  async fetchRuntimeLogs(runtimeId: string, lines = 200): Promise<RuntimeCommand> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/logs`, {
+      method: "POST",
+      body: JSON.stringify({ lines }),
+    });
+    return parseWithFallback(raw, RuntimeCommandSchema, EMPTY_RUNTIME_COMMAND, {
+      endpoint: "POST /api/runtimes/:id/logs",
+    });
+  }
+
+  async getRuntimeCommand(runtimeId: string, commandId: string): Promise<RuntimeCommand> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/commands/${commandId}`,
+    );
+    return parseWithFallback(raw, RuntimeCommandSchema, EMPTY_RUNTIME_COMMAND, {
+      endpoint: "GET /api/runtimes/:id/commands/:commandId",
+    });
+  }
   async initiateListModels(runtimeId: string): Promise<RuntimeModelListRequest> {
     const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/models`, {
       method: "POST",

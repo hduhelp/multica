@@ -77,6 +77,7 @@ import type {
   SearchProjectsResponse,
   ShareLink,
   ShareLinkInfo,
+  RuntimeCommand,
   Skill,
   SkillBatchImportResponse,
   Squad,
@@ -2953,6 +2954,29 @@ export const EMPTY_SKILL_BATCH_IMPORT: SkillBatchImportResponse = {
   created: 0,
   skipped: 0,
   failed: 0,
+};
+
+// Remote daemon command record. kind/status are server-driven enums, so they
+// stay strings with defaults — a value this client has not shipped support for
+// must not blank the whole record and strand the polling UI.
+export const RuntimeCommandSchema = z.object({
+  id: z.string().optional().default(""),
+  runtime_id: z.string().optional().default(""),
+  kind: z.string().optional().default("restart"),
+  status: z.string().optional().default("pending"),
+  output: z.string().optional(),
+  error: z.string().optional(),
+  created_at: z.string().optional().default(""),
+  updated_at: z.string().optional().default(""),
+}).loose();
+
+export const EMPTY_RUNTIME_COMMAND: RuntimeCommand = {
+  id: "",
+  runtime_id: "",
+  kind: "restart",
+  status: "pending",
+  created_at: "",
+  updated_at: "",
 };
 
 /**

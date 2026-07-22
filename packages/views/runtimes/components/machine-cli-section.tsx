@@ -1,6 +1,7 @@
 import type { AgentRuntime } from "@multica/core/types";
 import type { RuntimeMachine } from "./runtime-machines";
 import { UpdateSection } from "./update-section";
+import { DaemonControlSection } from "./daemon-control-section";
 
 /**
  * Pick one runtime the viewer may manage as the command channel for a
@@ -61,11 +62,18 @@ export function MachineCliSection({
   }
 
   return (
-    <UpdateSection
-      runtimeId={updateRuntime?.id ?? null}
-      currentVersion={machine.cliVersion}
-      isOnline={updateRuntime?.status === "online"}
-      launchedBy={machine.launchedBy}
-    />
+    <div className="space-y-4">
+      <UpdateSection
+        runtimeId={updateRuntime?.id ?? null}
+        currentVersion={machine.cliVersion}
+        isOnline={updateRuntime?.status === "online"}
+        launchedBy={machine.launchedBy}
+      />
+      <DaemonControlSection
+        runtimeId={updateRuntime?.id ?? null}
+        isOnline={updateRuntime?.status === "online"}
+        launchedBy={machine.launchedBy}
+      />
+    </div>
   );
 }

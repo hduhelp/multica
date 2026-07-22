@@ -196,7 +196,10 @@ type Handler struct {
 	ModelListStore        ModelListStore
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
-	FeatureFlags          *featureflag.Service
+	// RuntimeCommandStore parks remote daemon commands (log fetch, restart)
+	// until the runtime picks them up on its next heartbeat.
+	RuntimeCommandStore RuntimeCommandStore
+	FeatureFlags        *featureflag.Service
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that
@@ -457,6 +460,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		ModelCatalogCache:            NewInMemoryModelCatalogCache(),
 		LocalSkillListStore:          NewInMemoryLocalSkillListStore(),
 		LocalSkillImportStore:        NewInMemoryLocalSkillImportStore(),
+		RuntimeCommandStore:          NewInMemoryRuntimeCommandStore(),
 		LivenessStore:                NewNoopLivenessStore(),
 		HeartbeatScheduler:           NewPassthroughHeartbeatScheduler(queries),
 		Storage:                      store,
