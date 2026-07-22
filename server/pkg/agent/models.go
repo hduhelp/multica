@@ -80,6 +80,16 @@ var (
 
 const modelCacheTTL = 60 * time.Second
 
+// resetModelDiscoveryCacheForTests clears the discovery cache. Tests that swap
+// the backing CLI binary between calls must reset this alongside the thinking
+// cache, or a prior binary's catalog leaks into the next assertion. Exposed for
+// tests only; production relies on modelCacheTTL / the per-path cache key.
+func resetModelDiscoveryCacheForTests() {
+	modelCacheMu.Lock()
+	modelCache = map[string]modelCacheEntry{}
+	modelCacheMu.Unlock()
+}
+
 // ListModels returns the models supported by the given agent provider.
 // For providers with a known static catalog it returns the baked-in
 // list; for providers with a CLI discovery mechanism (codex, opencode,
@@ -96,7 +106,14 @@ const modelCacheTTL = 60 * time.Second
 func ListModels(ctx context.Context, providerType, executablePath string) ([]Model, error) {
 	switch providerType {
 	case "claude":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		// Key on executablePath (not bare providerType) like every other
+		// dynamic-discovery provider: annotateClaudeThinking derives the effort
+		// catalog from THIS binary's `--help`, so two different claude binaries
+		// (or the same path after a version bump) must not share a cache entry —
+		// otherwise one host's stale thinking catalog leaks to another. This also
+		// stops cross-test contamination between fakes that advertise different
+		// --effort support.
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			models := discoverClaudeModels()
 			annotateClaudeThinking(ctx, models, executablePath)
 			return models, nil

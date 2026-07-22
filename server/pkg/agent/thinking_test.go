@@ -505,7 +505,9 @@ func TestValidateThinkingLevel_EmptyModelResolvesToDefault(t *testing.T) {
 	// trying to verify.
 	fakeClaude := writeFakeClaudeHelpBinary(t)
 	resetThinkingCacheForTests()
+	resetModelDiscoveryCacheForTests()
 	defer resetThinkingCacheForTests()
+	defer resetModelDiscoveryCacheForTests()
 
 	ctx := context.Background()
 
@@ -554,7 +556,9 @@ func TestValidateThinkingLevel_ExplicitModel(t *testing.T) {
 	// This test resets the package-global thinking cache, so it must remain serial.
 	fakeClaude := writeFakeClaudeHelpBinary(t)
 	resetThinkingCacheForTests()
+	resetModelDiscoveryCacheForTests()
 	defer resetThinkingCacheForTests()
+	defer resetModelDiscoveryCacheForTests()
 
 	ctx := context.Background()
 
@@ -645,7 +649,9 @@ func TestValidateThinkingLevel_PreEffortCLIRejectsAllLevels(t *testing.T) {
 	// injected as a flag the binary rejects with "unknown option".
 	fakeClaude := writeFakeClaudePreEffortHelpBinary(t)
 	resetThinkingCacheForTests()
+	resetModelDiscoveryCacheForTests()
 	defer resetThinkingCacheForTests()
+	defer resetModelDiscoveryCacheForTests()
 
 	ctx := context.Background()
 
@@ -666,6 +672,78 @@ func TestValidateThinkingLevel_PreEffortCLIRejectsAllLevels(t *testing.T) {
 	}
 	if !ok {
 		t.Errorf("empty value must always be valid")
+	}
+}
+
+// TestValidateThinkingLevel_SwitchingClaudeBinaryDoesNotLeakCatalog is the
+// regression guard for the discovery-cache key bug: claude ListModels was cached
+// under a bare "claude" key, so an effort-CLI result leaked to a subsequent
+// pre-effort-CLI probe (and vice versa). Keying on executablePath fixes it; this
+// test flips binaries within one test to prove the second binary's catalog wins.
+func TestValidateThinkingLevel_SwitchingClaudeBinaryDoesNotLeakCatalog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+	resetThinkingCacheForTests()
+	resetModelDiscoveryCacheForTests()
+	defer resetThinkingCacheForTests()
+	defer resetModelDiscoveryCacheForTests()
+
+	ctx := context.Background()
+
+	// Effort-advertising CLI first: xhigh is valid on opus-4-7.
+	effortCLI := writeFakeClaudeHelpBinary(t)
+	ok, err := ValidateThinkingLevel(ctx, "claude", effortCLI, "claude-opus-4-7", "xhigh")
+	if err != nil {
+		t.Fatalf("effort CLI: unexpected err: %v", err)
+	}
+	if !ok {
+		t.Fatal("effort CLI: xhigh should be valid on opus-4-7")
+	}
+
+	// A DIFFERENT binary that predates --effort must not inherit the first's
+	// catalog: every level is now invalid.
+	preEffortCLI := writeFakeClaudePreEffortHelpBinary(t)
+	for _, level := range []string{"low", "medium", "high", "xhigh", "max"} {
+		ok, err := ValidateThinkingLevel(ctx, "claude", preEffortCLI, "claude-opus-4-7", level)
+		if err != nil {
+			t.Fatalf("pre-effort CLI %q: unexpected err: %v", level, err)
+		}
+		if ok {
+			t.Errorf("pre-effort CLI: level %q leaked from the effort binary's cached catalog", level)
+		}
+	}
+}
+
+// TestClaudeOpus46RejectsXhigh pins the corrected per-model catalog: Opus 4.6
+// does NOT support xhigh (it silently degrades to high), unlike Opus 4.7/4.8.
+// See platform.claude.com/docs/en/build-with-claude/effort.
+func TestClaudeOpus46RejectsXhigh(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+	resetThinkingCacheForTests()
+	resetModelDiscoveryCacheForTests()
+	defer resetThinkingCacheForTests()
+	defer resetModelDiscoveryCacheForTests()
+
+	ctx := context.Background()
+	fakeClaude := writeFakeClaudeHelpBinary(t)
+
+	ok, err := ValidateThinkingLevel(ctx, "claude", fakeClaude, "claude-opus-4-6", "xhigh")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ok {
+		t.Error("xhigh must be invalid on opus-4-6")
+	}
+	// max IS supported on Opus 4.6.
+	ok, err = ValidateThinkingLevel(ctx, "claude", fakeClaude, "claude-opus-4-6", "max")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !ok {
+		t.Error("max should be valid on opus-4-6")
 	}
 }
 
@@ -793,7 +871,9 @@ func writeFakeCodexModelsBinary(t *testing.T) string {
 func TestThinkingCacheKeyDistinct(t *testing.T) {
 	// This test resets the package-global thinking cache, so it must remain serial.
 	resetThinkingCacheForTests()
+	resetModelDiscoveryCacheForTests()
 	defer resetThinkingCacheForTests()
+	defer resetModelDiscoveryCacheForTests()
 
 	a := thinkingCacheKey{provider: "claude", executablePath: "/bin/claude", cliVersion: "2.1.121"}
 	b := thinkingCacheKey{provider: "claude", executablePath: "/bin/claude", cliVersion: "2.1.122"}
