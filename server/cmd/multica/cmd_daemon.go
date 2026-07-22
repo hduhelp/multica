@@ -758,6 +758,9 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	// Set by the Electron Desktop app when it spawns the CLI so the server
 	// can mark those runtimes as "managed" and hide CLI self-update UI.
 	cfg.LaunchedBy = os.Getenv("MULTICA_LAUNCHED_BY")
+	// The rotating daemon.log the background supervisor writes to; enables the
+	// server-triggered remote log fetch to return the tail of it.
+	cfg.LogPath = daemonLogPathForProfile(cfg.Profile)
 
 	ctx, stop := notifyShutdownContext(context.Background())
 	defer stop()
