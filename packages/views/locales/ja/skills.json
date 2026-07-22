@@ -280,7 +280,13 @@
       "name_conflict_hint": " インポートしたスキル名はすでに存在します。再試行する前に既存のものを削除してください。",
       "fallback_error": "インポートに失敗しました",
       "cancel": "キャンセル",
-      "toast_imported": "スキルをインポートしました"
+      "toast_imported": "スキルをインポートしました",
+      "import_partial_failed": "{{count}} 個のスキルのインポートに失敗しました：",
+      "directory_hint": "これは {{count}} 個のスキルを含むディレクトリです。インポートするものを選択してください：",
+      "select_all": "すべて選択",
+      "select_none": "クリア",
+      "import_selected": "選択をインポート（{{count}}）",
+      "toast_imported_bulk": "{{count}} 個のスキルをインポートしました"
     }
   },
   "runtime_import": {

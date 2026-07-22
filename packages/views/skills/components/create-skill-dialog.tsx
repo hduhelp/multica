@@ -15,7 +15,7 @@ import {
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
-import type { Skill } from "@multica/core/types";
+import type { Skill, SkillImportCandidate } from "@multica/core/types";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { isImeComposing } from "@multica/core/utils";
 import {
@@ -33,6 +33,7 @@ import {
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
 import { Button } from "@multica/ui/components/ui/button";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Textarea } from "@multica/ui/components/ui/textarea";
@@ -290,6 +291,11 @@ function UrlForm({
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // Container-directory import: when the URL points at a directory that holds
+  // multiple skills, the server returns candidates instead of one skill and the
+  // user picks which to import. `selected` keys on candidate URL.
+  const [candidates, setCandidates] = useState<SkillImportCandidate[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const source = detectUrlSource(url);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fadeStyle = useScrollFade(scrollRef);
@@ -299,15 +305,68 @@ function UrlForm({
     if (!trimmed) return;
     setLoading(true);
     setError("");
+    setCandidates([]);
     try {
-      const skill = await api.importSkill({ url: trimmed });
-      seedAfterCreate(qc, wsId, skill);
+      const result = await api.importSkill({ url: trimmed });
+      if ("status" in result) {
+        // Directory of skills — present the list and preselect all.
+        setCandidates(result.candidates);
+        setSelected(new Set(result.candidates.map((c) => c.url)));
+        setLoading(false);
+        return;
+      }
+      seedAfterCreate(qc, wsId, result);
       toast.success(t(($) => $.create.url.toast_imported));
-      onCreated(skill);
+      onCreated(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : t(($) => $.create.url.fallback_error));
       setLoading(false);
     }
+  };
+
+  const toggleCandidate = (candidateUrl: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(candidateUrl)) next.delete(candidateUrl);
+      else next.add(candidateUrl);
+      return next;
+    });
+  };
+
+  const importSelected = async () => {
+    const targets = candidates.filter((c) => selected.has(c.url));
+    if (targets.length === 0) return;
+    setLoading(true);
+    setError("");
+    let lastSkill: Skill | null = null;
+    let ok = 0;
+    const failures: string[] = [];
+    for (const c of targets) {
+      try {
+        const result = await api.importSkill({ url: c.url });
+        // A candidate URL points at a single skill, so a nested "multiple" is
+        // not expected; guard defensively and skip if it ever happens.
+        if ("status" in result) continue;
+        seedAfterCreate(qc, wsId, result);
+        lastSkill = result;
+        ok += 1;
+      } catch (err) {
+        failures.push(c.name + ": " + (err instanceof Error ? err.message : "failed"));
+      }
+    }
+    setLoading(false);
+    if (ok > 0) {
+      toast.success(t(($) => $.create.url.toast_imported_bulk, { count: ok }));
+    }
+    if (failures.length > 0) {
+      setError(
+        t(($) => $.create.url.import_partial_failed, { count: failures.length }) +
+          " " +
+          failures.join("; "),
+      );
+      return;
+    }
+    if (lastSkill) onCreated(lastSkill);
   };
 
   const submittingLabel = (() => {
@@ -371,6 +430,47 @@ function UrlForm({
           </div>
         </div>
 
+        {candidates.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                {t(($) => $.create.url.directory_hint, {
+                  count: candidates.length,
+                })}
+              </p>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                onClick={() =>
+                  setSelected(
+                    selected.size === candidates.length
+                      ? new Set()
+                      : new Set(candidates.map((c) => c.url)),
+                  )
+                }
+              >
+                {selected.size === candidates.length
+                  ? t(($) => $.create.url.select_none)
+                  : t(($) => $.create.url.select_all)}
+              </button>
+            </div>
+            <div className="max-h-64 space-y-0.5 overflow-y-auto rounded-md border p-1">
+              {candidates.map((c) => (
+                <label
+                  key={c.url}
+                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted/50"
+                >
+                  <Checkbox
+                    checked={selected.has(c.url)}
+                    onCheckedChange={() => toggleCandidate(c.url)}
+                  />
+                  <span className="font-mono text-xs">{c.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
         {error && (
           <div
             role="alert"
@@ -397,24 +497,40 @@ function UrlForm({
         >
           {t(($) => $.create.url.cancel)}
         </Button>
-        <Button
-          type="button"
-          size="sm"
-          onClick={submit}
-          disabled={!url.trim() || loading}
-        >
-          {loading ? (
-            <>
+        {candidates.length > 0 ? (
+          <Button
+            type="button"
+            size="sm"
+            onClick={importSelected}
+            disabled={selected.size === 0 || loading}
+          >
+            {loading ? (
               <Loader2 className="h-3 w-3 animate-spin" />
-              {submittingLabel}
-            </>
-          ) : (
-            <>
+            ) : (
               <Download className="h-3 w-3" />
-              {submittingLabel}
-            </>
-          )}
-        </Button>
+            )}
+            {t(($) => $.create.url.import_selected, { count: selected.size })}
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            onClick={submit}
+            disabled={!url.trim() || loading}
+          >
+            {loading ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {submittingLabel}
+              </>
+            ) : (
+              <>
+                <Download className="h-3 w-3" />
+                {submittingLabel}
+              </>
+            )}
+          </Button>
+        )}
       </div>
     </>
   );

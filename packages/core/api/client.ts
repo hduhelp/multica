@@ -54,6 +54,7 @@ import type {
   MemberWithUser,
   User,
   Skill,
+  SkillImportOutcome,
   SkillSummary,
   CreateSkillRequest,
   UpdateSkillRequest,
@@ -2922,7 +2923,7 @@ export class ApiClient {
     await this.fetch(`/api/skills/${id}`, { method: "DELETE" });
   }
 
-  async importSkill(data: { url: string }): Promise<Skill> {
+  async importSkill(data: { url: string }): Promise<SkillImportOutcome> {
     return this.fetch("/api/skills/import", {
       method: "POST",
       body: JSON.stringify(data),
