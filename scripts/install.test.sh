@@ -300,10 +300,54 @@ STUB
   grep -qx 'install hduhelp/tap/multica' "$tmp/brew.log"
 }
 
+test_installed_but_unlinked_formula_is_relinked() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  _setup_sandbox "$tmp"
+  cat >"$tmp/stub-bin/brew" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$MULTICA_TEST_BREW_LOG"
+case "${1:-}" in
+  tap)
+    exit 0
+    ;;
+  install)
+    exit 1
+    ;;
+  list)
+    [[ "${2:-}" == "hduhelp/tap/multica" ]]
+    ;;
+  link)
+    [[ "${2:-}" == "--overwrite" && "${3:-}" == "hduhelp/tap/multica" ]] || exit 68
+    cp "$MULTICA_TEST_PAYLOAD" "$MULTICA_TEST_INSTALL_BIN/multica"
+    chmod +x "$MULTICA_TEST_INSTALL_BIN/multica"
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+STUB
+  chmod +x "$tmp/stub-bin/brew"
+
+  PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
+    MULTICA_BIN_DIR="$tmp/install-bin" \
+    MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
+    MULTICA_TEST_PAYLOAD="$tmp/payload/multica" \
+    MULTICA_TEST_INSTALL_BIN="$tmp/install-bin" \
+    MULTICA_TEST_BREW_LOG="$tmp/brew.log" \
+    bash "$ROOT_DIR/scripts/install.sh" >"$tmp/install.out" 2>"$tmp/install.err"
+
+  grep -qx 'link --overwrite hduhelp/tap/multica' "$tmp/brew.log"
+  test -x "$tmp/install-bin/multica"
+}
+
 test_brew_install_failure_falls_back_to_release_binary
 test_brew_tap_failure_falls_back_to_release_binary
 test_remote_ssh_install_prints_token_login_hint
 test_local_install_does_not_print_token_login_hint
 test_distribution_references_use_hduhelp
 test_upstream_brew_install_migrates_to_hduhelp_tap
+test_installed_but_unlinked_formula_is_relinked
 echo "install.sh tests passed"

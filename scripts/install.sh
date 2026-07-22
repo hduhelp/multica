@@ -145,8 +145,14 @@ install_cli_brew() {
   # brew install exits non-zero if already installed on older Homebrew versions
   if ! brew install "$BREW_PACKAGE" >"$brew_log" 2>&1; then
     if brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
+      if ! brew link --overwrite "$BREW_PACKAGE" >>"$brew_log" 2>&1; then
+        warn "The Homebrew formula is installed but could not be linked."
+        _dump_brew_log "$brew_log"
+        rm -f "$brew_log"
+        return 1
+      fi
       rm -f "$brew_log"
-      ok "Multica CLI already installed via Homebrew"
+      ok "Multica CLI installed and linked via Homebrew"
     else
       warn "Failed to install multica via Homebrew. Falling back to GitHub Releases binary install."
       _dump_brew_log "$brew_log"
