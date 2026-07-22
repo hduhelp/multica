@@ -70,15 +70,15 @@ Multica manages the full agent lifecycle: from task assignment to execution moni
 ### macOS / Linux (Homebrew - recommended)
 
 ```bash
-brew install multica-ai/tap/multica
+brew install hduhelp/tap/multica
 ```
 
-Use `brew upgrade multica-ai/tap/multica` to keep the CLI current.
+Use `brew upgrade hduhelp/tap/multica` to keep the CLI current.
 
 ### macOS / Linux (install script)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hduhelp/multica/main/scripts/install.sh | bash
 ```
 
 Use this if Homebrew is not available. The script installs the Multica CLI on macOS and Linux by using Homebrew when it is on `PATH`, otherwise it downloads the binary directly.
@@ -86,7 +86,7 @@ Use this if Homebrew is not available. The script installs the Multica CLI on ma
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/hduhelp/multica/main/scripts/install.ps1 | iex
 ```
 
 Then configure, authenticate, and start the daemon in one command:
@@ -98,7 +98,7 @@ multica setup          # Connect to Multica Cloud, log in, start daemon
 > **Self-hosting?** Add `--with-server` to deploy a full Multica server on your machine:
 >
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server
+> curl -fsSL https://raw.githubusercontent.com/hduhelp/multica/main/scripts/install.sh | bash -s -- --with-server
 > multica setup self-host
 > ```
 >
@@ -191,4 +191,3 @@ make dev
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow, worktree support, testing, and troubleshooting.
 
 An iOS mobile client lives in [`apps/mobile/`](apps/mobile/) — see its [README](apps/mobile/README.md) for how to build it onto your own iPhone.
-

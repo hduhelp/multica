@@ -43,8 +43,6 @@ jobs:
 
   release:
     needs: verify
-    # The Homebrew formula still belongs to the upstream multica-ai org.
-    if: github.repository_owner == 'multica-ai'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -65,7 +63,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
   # macOS remains manual because signing and notarization credentials are not
   # wired into CI. Linux and Windows installers attach to the GitHub Release.

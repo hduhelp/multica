@@ -22,8 +22,16 @@ STUB
 
   cat >"$stub_bin/curl" <<'STUB'
 #!/usr/bin/env bash
+if [[ "$*" == *"multica-ai/multica"* ]]; then
+  echo "installer must not download from upstream multica-ai/multica" >&2
+  exit 64
+fi
+if [[ "$*" != *"hduhelp/multica"* ]]; then
+  echo "installer expected an hduhelp/multica URL, got: $*" >&2
+  exit 65
+fi
 if [[ "$*" == *"-sI"* ]]; then
-  printf 'HTTP/2 302\r\nlocation: https://github.com/multica-ai/multica/releases/tag/v0.3.2\r\n'
+  printf 'HTTP/2 302\r\nlocation: https://github.com/hduhelp/multica/releases/tag/v0.3.2\r\n'
   exit 0
 fi
 
@@ -87,9 +95,11 @@ test_brew_install_failure_falls_back_to_release_binary() {
 #!/usr/bin/env bash
 case "${1:-}" in
   tap)
+    [[ "${2:-}" == "hduhelp/tap" ]] || exit 66
     exit 0
     ;;
   install)
+    [[ "${2:-}" == "hduhelp/tap/multica" ]] || exit 67
     echo "simulated brew install failure" >&2
     exit 42
     ;;
@@ -236,8 +246,64 @@ STUB
   fi
 }
 
+test_distribution_references_use_hduhelp() {
+  local upstream_pattern='raw.githubusercontent.com/multica-ai/multica|api.github.com/repos/multica-ai/multica|github.com/multica-ai/multica/releases|multica-ai/tap'
+  if grep -En "$upstream_pattern" \
+    "$ROOT_DIR/scripts/install.sh" \
+    "$ROOT_DIR/scripts/install.ps1" \
+    "$ROOT_DIR/README.md" \
+    "$ROOT_DIR/Makefile" | grep -v 'LEGACY_BREW_PACKAGE='; then
+    echo "distribution references must use hduhelp/multica" >&2
+    return 1
+  fi
+}
+
+test_upstream_brew_install_migrates_to_hduhelp_tap() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  _setup_sandbox "$tmp"
+  cp "$tmp/payload/multica" "$tmp/install-bin/multica"
+  cat >"$tmp/stub-bin/brew" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$MULTICA_TEST_BREW_LOG"
+case "${1:-}" in
+  list)
+    [[ "${2:-}" == "multica-ai/tap/multica" ]]
+    ;;
+  unpin|uninstall)
+    [[ "${2:-}" == "multica-ai/tap/multica" ]]
+    ;;
+  tap)
+    [[ "${2:-}" == "hduhelp/tap" ]]
+    ;;
+  install)
+    [[ "${2:-}" == "hduhelp/tap/multica" ]]
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+STUB
+  chmod +x "$tmp/stub-bin/brew"
+
+  PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
+    MULTICA_BIN_DIR="$tmp/install-bin" \
+    MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
+    MULTICA_TEST_BREW_LOG="$tmp/brew.log" \
+    bash "$ROOT_DIR/scripts/install.sh" >"$tmp/install.out" 2>"$tmp/install.err"
+
+  grep -qx 'unpin multica-ai/tap/multica' "$tmp/brew.log"
+  grep -qx 'uninstall multica-ai/tap/multica' "$tmp/brew.log"
+  grep -qx 'tap hduhelp/tap' "$tmp/brew.log"
+  grep -qx 'install hduhelp/tap/multica' "$tmp/brew.log"
+}
+
 test_brew_install_failure_falls_back_to_release_binary
 test_brew_tap_failure_falls_back_to_release_binary
 test_remote_ssh_install_prints_token_login_hint
 test_local_install_does_not_print_token_login_hint
+test_distribution_references_use_hduhelp
+test_upstream_brew_install_migrates_to_hduhelp_tap
 echo "install.sh tests passed"

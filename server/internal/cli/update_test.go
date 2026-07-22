@@ -8,6 +8,18 @@ import (
 	"time"
 )
 
+func TestReleaseDistributionUsesHDUHelp(t *testing.T) {
+	if ReleaseRepository != "hduhelp/multica" {
+		t.Fatalf("ReleaseRepository = %q, want hduhelp/multica", ReleaseRepository)
+	}
+	if LatestReleaseURL != "https://github.com/hduhelp/multica/releases/latest" {
+		t.Fatalf("LatestReleaseURL = %q, want hduhelp release page", LatestReleaseURL)
+	}
+	if HomebrewPackage != "hduhelp/tap/multica" {
+		t.Fatalf("HomebrewPackage = %q, want hduhelp/tap/multica", HomebrewPackage)
+	}
+}
+
 func TestReleaseAssetCandidates(t *testing.T) {
 	tests := []struct {
 		name          string
