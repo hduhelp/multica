@@ -255,7 +255,8 @@
       "select_all": "全选",
       "select_none": "清空",
       "import_selected": "导入所选（{{count}}）",
-      "toast_imported_bulk": "已导入 {{count}} 个技能"
+      "toast_imported_bulk": "已导入 {{count}} 个技能",
+      "toast_all_skipped": "选中的 {{count}} 个技能都已存在"
     }
   },
   "runtime_import": {

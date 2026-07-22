@@ -50,6 +50,8 @@ export type {
   SkillImportCandidate,
   SkillImportMultiple,
   SkillImportOutcome,
+  SkillBatchImportItem,
+  SkillBatchImportResponse,
   SkillSummary,
   AgentSkillSummary,
   DisabledRuntimeSkill,

@@ -255,7 +255,8 @@
       "select_all": "すべて選択",
       "select_none": "クリア",
       "import_selected": "選択をインポート（{{count}}）",
-      "toast_imported_bulk": "{{count}} 個のスキルをインポートしました"
+      "toast_imported_bulk": "{{count}} 個のスキルをインポートしました",
+      "toast_all_skipped": "選択した {{count}} 個のスキルはすべて既に存在します"
     }
   },
   "runtime_import": {
