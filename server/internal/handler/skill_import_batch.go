@@ -153,7 +153,7 @@ func (h *Handler) importSkillFromURL(ctx context.Context, ic skillImportContext,
 	if err != nil {
 		return SkillImportResult{Status: "failed", Reason: err.Error()}
 	}
-	imported, err := fetchImportedSkillWithRetry(source, normalized)
+	imported, err := fetchImportedSkillWithRetry(ctx, source, normalized)
 	if err != nil {
 		return SkillImportResult{Status: "failed", Reason: err.Error()}
 	}
@@ -162,7 +162,7 @@ func (h *Handler) importSkillFromURL(ctx context.Context, ic skillImportContext,
 
 // fetchImportedSkillWithRetry dispatches to the per-source fetcher and retries a
 // transient failure once, so a single throttled request doesn't sink the skill.
-func fetchImportedSkillWithRetry(source importSource, normalized string) (*importedSkill, error) {
+func fetchImportedSkillWithRetry(ctx context.Context, source importSource, normalized string) (*importedSkill, error) {
 	var lastErr error
 	for attempt := 0; attempt < batchImportFetchAttempts; attempt++ {
 		if attempt > 0 {
@@ -173,11 +173,11 @@ func fetchImportedSkillWithRetry(source importSource, normalized string) (*impor
 		var err error
 		switch source {
 		case sourceClawHub:
-			imported, err = fetchFromClawHub(httpClient, normalized)
+			imported, err = fetchFromClawHub(ctx, httpClient, normalized)
 		case sourceSkillsSh:
-			imported, err = fetchFromSkillsSh(httpClient, normalized)
+			imported, err = fetchFromSkillsSh(ctx, httpClient, normalized)
 		case sourceGitHub:
-			imported, err = fetchFromGitHub(httpClient, normalized)
+			imported, err = fetchFromGitHub(ctx, httpClient, normalized)
 		}
 		if err == nil {
 			return imported, nil

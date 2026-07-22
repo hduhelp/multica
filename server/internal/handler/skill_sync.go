@@ -45,11 +45,11 @@ func (h *Handler) importSkillFromSource(ctx context.Context, skill db.Skill, ski
 	var imported *importedSkill
 	switch source {
 	case sourceClawHub:
-		imported, err = fetchFromClawHub(httpClient, normalized)
+		imported, err = fetchFromClawHub(ctx, httpClient, normalized)
 	case sourceSkillsSh:
-		imported, err = fetchFromSkillsSh(httpClient, normalized)
+		imported, err = fetchFromSkillsSh(ctx, httpClient, normalized)
 	case sourceGitHub:
-		imported, err = fetchFromGitHub(httpClient, normalized)
+		imported, err = fetchFromGitHub(ctx, httpClient, normalized)
 	default:
 		return skill, nil, false, fmt.Errorf("unsupported skill source %v", source)
 	}
