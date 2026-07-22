@@ -338,35 +338,47 @@ function UrlForm({
     if (targets.length === 0) return;
     setLoading(true);
     setError("");
-    let lastSkill: Skill | null = null;
-    let ok = 0;
-    const failures: string[] = [];
-    for (const c of targets) {
-      try {
-        const result = await api.importSkill({ url: c.url });
-        // A candidate URL points at a single skill, so a nested "multiple" is
-        // not expected; guard defensively and skip if it ever happens.
-        if ("status" in result) continue;
-        seedAfterCreate(qc, wsId, result);
-        lastSkill = result;
-        ok += 1;
-      } catch (err) {
-        failures.push(c.name + ": " + (err instanceof Error ? err.message : "failed"));
-      }
+    let res;
+    try {
+      // One request: the server imports the selection concurrently and returns
+      // a per-URL result, so a slow/throttled skill can't drop the connection
+      // the way N sequential client requests could.
+      res = await api.importSkillsBatch({ urls: targets.map((c) => c.url) });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t(($) => $.create.url.fallback_error));
+      setLoading(false);
+      return;
     }
     setLoading(false);
-    if (ok > 0) {
-      toast.success(t(($) => $.create.url.toast_imported_bulk, { count: ok }));
+
+    let lastSkill: Skill | null = null;
+    for (const item of res.results) {
+      if (item.result.skill) {
+        seedAfterCreate(qc, wsId, item.result.skill);
+        lastSkill = item.result.skill;
+      }
     }
-    if (failures.length > 0) {
+    if (res.created > 0) {
+      toast.success(t(($) => $.create.url.toast_imported_bulk, { count: res.created }));
+    }
+    if (res.failed > 0) {
+      const failures = res.results
+        .filter((it) => it.result.status !== "created" && it.result.status !== "updated" && it.result.status !== "skipped")
+        .map((it) => (it.url.split("/").pop() || it.url) + ": " + (it.result.reason || "failed"));
       setError(
-        t(($) => $.create.url.import_partial_failed, { count: failures.length }) +
+        t(($) => $.create.url.import_partial_failed, { count: res.failed }) +
           " " +
           failures.join("; "),
       );
-      return;
+      return; // keep the dialog open so the user sees which failed
     }
-    if (lastSkill) onCreated(lastSkill);
+    if (lastSkill) {
+      onCreated(lastSkill);
+    } else if (res.skipped > 0) {
+      // Everything selected already existed — nothing to open; just close.
+      toast.success(t(($) => $.create.url.toast_all_skipped, { count: res.skipped }));
+      onCancel();
+    }
   };
 
   const submittingLabel = (() => {

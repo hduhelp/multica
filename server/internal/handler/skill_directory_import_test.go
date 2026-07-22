@@ -79,3 +79,13 @@ func TestBuildGitHubTreeURL(t *testing.T) {
 		t.Errorf("round-trip mismatch: %+v", spec)
 	}
 }
+
+// TestDedupeNonEmpty pins the batch-import URL normalization: trims, drops
+// empties, de-duplicates, preserves first-seen order.
+func TestDedupeNonEmpty(t *testing.T) {
+	got := dedupeNonEmpty([]string{" a ", "b", "a", "", "  ", "b", "c"})
+	want := []string{"a", "b", "c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dedupeNonEmpty = %v, want %v", got, want)
+	}
+}

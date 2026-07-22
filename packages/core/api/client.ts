@@ -55,6 +55,7 @@ import type {
   User,
   Skill,
   SkillImportOutcome,
+  SkillBatchImportResponse,
   SkillSummary,
   CreateSkillRequest,
   UpdateSkillRequest,
@@ -404,6 +405,8 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
   EMPTY_SKILL,
+  SkillBatchImportResponseSchema,
+  EMPTY_SKILL_BATCH_IMPORT,
   IssueViewSchema,
   IssueViewListSchema,
   IssueViewPreferenceSchema,
@@ -2940,6 +2943,24 @@ export class ApiClient {
     return parseWithFallback(raw, SkillSchema, EMPTY_SKILL, {
       endpoint: "POST /api/skills/:id/refresh",
     });
+  }
+
+  // Imports a set of skill URLs in one request — the directory picker sends
+  // every checked sub-skill here rather than firing N single imports.
+  async importSkillsBatch(data: {
+    urls: string[];
+    on_conflict?: "skip" | "overwrite" | "rename";
+  }): Promise<SkillBatchImportResponse> {
+    const raw = await this.fetch<unknown>("/api/skills/import/batch", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(
+      raw,
+      SkillBatchImportResponseSchema,
+      EMPTY_SKILL_BATCH_IMPORT,
+      { endpoint: "POST /api/skills/import/batch" },
+    );
   }
 
   async listAgentSkills(agentId: string): Promise<SkillSummary[]> {

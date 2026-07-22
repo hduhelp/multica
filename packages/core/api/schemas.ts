@@ -78,6 +78,7 @@ import type {
   ShareLink,
   ShareLinkInfo,
   Skill,
+  SkillBatchImportResponse,
   Squad,
   TimelineEntry,
   User,
@@ -2926,6 +2927,32 @@ export const EMPTY_SKILL: Skill = {
   created_at: "",
   updated_at: "",
   files: [],
+};
+
+// Batch import reports one result per submitted URL. status is server-driven
+// and open-ended (created | updated | skipped | conflict | failed), so it stays
+// a string with a default rather than an enum the UI would have to exhaust.
+export const SkillBatchImportItemSchema = z.object({
+  url: z.string().optional().default(""),
+  result: z.object({
+    status: z.string().optional().default("failed"),
+    reason: z.string().optional(),
+    skill: SkillSchema.optional(),
+  }).loose().optional().default({ status: "failed" }),
+}).loose();
+
+export const SkillBatchImportResponseSchema = z.object({
+  results: z.array(SkillBatchImportItemSchema).optional().default([]),
+  created: z.number().optional().default(0),
+  skipped: z.number().optional().default(0),
+  failed: z.number().optional().default(0),
+}).loose();
+
+export const EMPTY_SKILL_BATCH_IMPORT: SkillBatchImportResponse = {
+  results: [],
+  created: 0,
+  skipped: 0,
+  failed: 0,
 };
 
 /**
