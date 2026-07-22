@@ -478,6 +478,8 @@ type (
 	PendingModelList        = protocol.DaemonHeartbeatPendingModelList
 	PendingLocalSkills      = protocol.DaemonHeartbeatPendingLocalSkills
 	PendingLocalSkillImport = protocol.DaemonHeartbeatPendingLocalSkillImport
+	PendingRestart          = protocol.DaemonHeartbeatPendingRestart
+	PendingLogFetch         = protocol.DaemonHeartbeatPendingLogFetch
 )
 
 func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string) (*HeartbeatResponse, error) {
@@ -494,6 +496,12 @@ func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string) (*Heartbea
 // ReportUpdateResult sends the CLI update result back to the server.
 func (c *Client) ReportUpdateResult(ctx context.Context, runtimeID, updateID string, result map[string]any) error {
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/update/%s/result", runtimeID, updateID), result, nil)
+}
+
+// ReportRuntimeCommandResult sends a remote-command (restart / log fetch) result
+// back to the server.
+func (c *Client) ReportRuntimeCommandResult(ctx context.Context, runtimeID, commandID string, result map[string]any) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/commands/%s/result", runtimeID, commandID), result, nil)
 }
 
 // ReportModelListResult sends the model-discovery result back to the server.

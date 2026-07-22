@@ -955,6 +955,29 @@ export interface RuntimeUpdate {
   updated_at: string;
 }
 
+export type RuntimeCommandKind = "restart" | "logs";
+
+export type RuntimeCommandStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "timeout";
+
+/** A one-shot remote control action sent to a live daemon (restart / log
+ * fetch). Same poll-by-id lifecycle as RuntimeUpdate. `output` carries the log
+ * snapshot for kind="logs" or a note for kind="restart". */
+export interface RuntimeCommand {
+  id: string;
+  runtime_id: string;
+  kind: RuntimeCommandKind;
+  status: RuntimeCommandStatus;
+  output?: string;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface RuntimeModel {
   id: string;
   label: string;

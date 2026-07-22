@@ -435,5 +435,20 @@
     "table_cache_r": "캐시 R",
     "table_cache_w": "캐시 W",
     "no_data": "아직 사용량 데이터가 없습니다"
+  },
+  "daemon_control": {
+    "title": "데몬 제어",
+    "subtitle": "런타임 데몬의 로그를 원격으로 보거나 재시작합니다.",
+    "view_logs": "로그 보기",
+    "restart": "재시작",
+    "restart_confirm": "재시작 확인",
+    "cancel": "취소",
+    "restart_initiated": "재시작을 시작했습니다 — 데몬이 곧 다시 연결됩니다",
+    "restart_failed": "재시작 실패",
+    "logs_title": "최근 데몬 로그",
+    "logs_refresh": "로그 새로고침",
+    "logs_empty": "(로그 파일이 비어 있습니다)",
+    "logs_failed": "로그를 가져오지 못했습니다",
+    "desktop_managed": "이 데몬은 Multica Desktop이 관리합니다. 데스크톱 앱에서 제어하세요."
   }
 }

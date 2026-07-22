@@ -450,5 +450,20 @@
     "table_cache_r": "Cache R",
     "table_cache_w": "Cache W",
     "no_data": "No usage data yet"
+  },
+  "daemon_control": {
+    "title": "Daemon control",
+    "subtitle": "View logs or restart the runtime's daemon remotely.",
+    "view_logs": "View logs",
+    "restart": "Restart",
+    "restart_confirm": "Confirm restart",
+    "cancel": "Cancel",
+    "restart_initiated": "Restart initiated — the daemon will reconnect shortly",
+    "restart_failed": "Restart failed",
+    "logs_title": "Recent daemon logs",
+    "logs_refresh": "Refresh logs",
+    "logs_empty": "(log file is empty)",
+    "logs_failed": "Failed to fetch logs",
+    "desktop_managed": "This daemon is managed by Multica Desktop; control it from the Desktop app."
   }
 }

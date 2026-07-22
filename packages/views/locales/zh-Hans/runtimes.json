@@ -435,5 +435,20 @@
     "table_cache_r": "缓存读",
     "table_cache_w": "缓存写",
     "no_data": "还没有使用数据"
+  },
+  "daemon_control": {
+    "title": "Daemon 控制",
+    "subtitle": "远程查看日志或重启该运行时的 daemon。",
+    "view_logs": "查看日志",
+    "restart": "重启",
+    "restart_confirm": "确认重启",
+    "cancel": "取消",
+    "restart_initiated": "已发起重启 —— daemon 稍后会重新连接",
+    "restart_failed": "重启失败",
+    "logs_title": "最近的 daemon 日志",
+    "logs_refresh": "刷新日志",
+    "logs_empty": "(日志文件为空)",
+    "logs_failed": "获取日志失败",
+    "desktop_managed": "该 daemon 由 Multica Desktop 管理,请在桌面端控制。"
   }
 }

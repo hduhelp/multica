@@ -435,5 +435,20 @@
     "table_cache_r": "キャッシュ R",
     "table_cache_w": "キャッシュ W",
     "no_data": "まだ使用量データがありません"
+  },
+  "daemon_control": {
+    "title": "デーモン制御",
+    "subtitle": "ランタイムのデーモンのログをリモートで表示、または再起動します。",
+    "view_logs": "ログを表示",
+    "restart": "再起動",
+    "restart_confirm": "再起動を確認",
+    "cancel": "キャンセル",
+    "restart_initiated": "再起動を開始しました — デーモンはまもなく再接続します",
+    "restart_failed": "再起動に失敗しました",
+    "logs_title": "最近のデーモンログ",
+    "logs_refresh": "ログを更新",
+    "logs_empty": "(ログファイルは空です)",
+    "logs_failed": "ログの取得に失敗しました",
+    "desktop_managed": "このデーモンは Multica Desktop が管理しています。デスクトップアプリから操作してください。"
   }
 }

@@ -273,6 +273,10 @@ type DaemonHeartbeatAckPayload struct {
 	// that don't know this field silently ignore it (standard JSON behavior)
 	// and fall back to the singular PendingLocalSkillImport above.
 	PendingLocalSkillImports []DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_imports,omitempty"`
+	// PendingRestart asks the daemon to restart itself (graceful unless Force).
+	PendingRestart *DaemonHeartbeatPendingRestart `json:"pending_restart,omitempty"`
+	// PendingLogFetch asks the daemon to return the tail of its own daemon.log.
+	PendingLogFetch *DaemonHeartbeatPendingLogFetch `json:"pending_log_fetch,omitempty"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no
@@ -303,4 +307,20 @@ type DaemonHeartbeatPendingLocalSkills struct {
 type DaemonHeartbeatPendingLocalSkillImport struct {
 	ID       string `json:"id"`
 	SkillKey string `json:"skill_key"`
+}
+
+// DaemonHeartbeatPendingRestart asks the daemon to restart itself. When Force is
+// false the daemon drains active tasks first (graceful); when true it restarts
+// immediately. The daemon reports "running" before restarting; the completed
+// state is inferred server-side from the fresh registration after re-exec.
+type DaemonHeartbeatPendingRestart struct {
+	ID    string `json:"id"`
+	Force bool   `json:"force,omitempty"`
+}
+
+// DaemonHeartbeatPendingLogFetch asks the daemon to return the last Lines lines
+// of its own rotating daemon.log. Snapshot only — no live follow.
+type DaemonHeartbeatPendingLogFetch struct {
+	ID    string `json:"id"`
+	Lines int    `json:"lines"`
 }

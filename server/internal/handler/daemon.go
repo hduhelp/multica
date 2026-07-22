@@ -990,6 +990,12 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if len(ack.PendingLocalSkillImports) > 0 {
 		resp["pending_local_skill_imports"] = ack.PendingLocalSkillImports
 	}
+	if ack.PendingRestart != nil {
+		resp["pending_restart"] = ack.PendingRestart
+	}
+	if ack.PendingLogFetch != nil {
+		resp["pending_log_fetch"] = ack.PendingLogFetch
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1126,6 +1132,18 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 		} else {
 			slog.Warn("update HasPending failed", "error", probeUpdateErr, "runtime_id", runtimeID)
 		}
+	}
+
+	// Claim any pending runtime control command (remote restart / log fetch) and
+	// render it as the matching heartbeat pending action. Bounded probe like the
+	// queues below so an empty queue never stalls the heartbeat.
+	if h.RuntimeCommandStore != nil {
+		cmdCtx, cancelCmd := context.WithTimeout(ctx, heartbeatHasPendingTimeout)
+		if restart, logs := h.pendingRuntimeCommandForHeartbeat(cmdCtx, runtimeID); restart != nil || logs != nil {
+			ack.PendingRestart = restart
+			ack.PendingLogFetch = logs
+		}
+		cancelCmd()
 	}
 
 	// Probe then claim the model list queue. Same pattern as the local-skill

@@ -64,6 +64,7 @@ import type {
   DashboardUsageByAgent,
   DashboardAgentRunTime,
   DashboardRunTimeDaily,
+  RuntimeCommand,
   RuntimeUpdate,
   RuntimeModelListRequest,
   RuntimeLocalSkillListRequest,
@@ -1584,6 +1585,33 @@ export class ApiClient {
     updateId: string,
   ): Promise<RuntimeUpdate> {
     return this.fetch(`/api/runtimes/${runtimeId}/update/${updateId}`);
+  }
+
+  async restartRuntime(
+    runtimeId: string,
+    force = false,
+  ): Promise<RuntimeCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/restart`, {
+      method: "POST",
+      body: JSON.stringify({ force }),
+    });
+  }
+
+  async fetchRuntimeLogs(
+    runtimeId: string,
+    lines = 200,
+  ): Promise<RuntimeCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/logs`, {
+      method: "POST",
+      body: JSON.stringify({ lines }),
+    });
+  }
+
+  async getRuntimeCommand(
+    runtimeId: string,
+    commandId: string,
+  ): Promise<RuntimeCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/commands/${commandId}`);
   }
 
   async initiateListModels(runtimeId: string): Promise<RuntimeModelListRequest> {
