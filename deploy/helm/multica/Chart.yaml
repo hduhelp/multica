@@ -6,9 +6,9 @@ description: |
 type: application
 version: 0.1.0
 appVersion: "backend-0.4.8.web-0.4.8"
-home: https://multica.ai
+home: https://multica.hduhelp.com
 sources:
-  - https://github.com/multica-ai/multica
+  - https://github.com/hduhelp/multica
 keywords:
   - multica
   - issue-tracker

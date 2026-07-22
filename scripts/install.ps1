@@ -1,6 +1,6 @@
 # Multica installer for Windows — one command to get started.
 #
-# Install CLI (default): connects to multica.ai
+# Install CLI (default): connects to multica.hduhelp.com
 #   irm https://raw.githubusercontent.com/hduhelp/multica/main/scripts/install.ps1 | iex
 #
 # Self-host: starts a local Multica server + installs CLI + configures
@@ -484,7 +484,7 @@ function Start-DefaultInstall {
     Write-Host ""
     Write-Host "  Next: configure your environment"
     Write-Host ""
-    Write-Host "     multica setup               " -NoNewline; Write-Host "# Connect to Multica Cloud (multica.ai)" -ForegroundColor DarkGray
+    Write-Host "     multica setup               " -NoNewline; Write-Host "# Connect to Multica Cloud (multica.hduhelp.com)" -ForegroundColor DarkGray
     Write-Host "     multica setup self-host      " -NoNewline; Write-Host "# Connect to a self-hosted server" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Self-hosting? Install the server first:"

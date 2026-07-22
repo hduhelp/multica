@@ -10,9 +10,9 @@ describe("runtime config", () => {
   it("uses cloud defaults without a desktop.json file", () => {
     expect(DEFAULT_RUNTIME_CONFIG).toEqual({
       schemaVersion: 1,
-      apiUrl: "https://api.multica.ai",
-      wsUrl: "wss://api.multica.ai/ws",
-      appUrl: "https://multica.ai",
+      apiUrl: "https://multica.api.hduhelp.com",
+      wsUrl: "wss://multica.api.hduhelp.com/ws",
+      appUrl: "https://multica.hduhelp.com",
     });
   });
 
@@ -42,6 +42,22 @@ describe("runtime config", () => {
       apiUrl: "https://api.multica.ai",
       wsUrl: "wss://api.multica.ai/ws",
       appUrl: "https://multica.ai",
+    });
+  });
+
+  it("derives the HDUHelp web app from its API host", () => {
+    expect(
+      parseRuntimeConfig(
+        JSON.stringify({
+          schemaVersion: 1,
+          apiUrl: "https://multica.api.hduhelp.com",
+        }),
+      ),
+    ).toEqual({
+      schemaVersion: 1,
+      apiUrl: "https://multica.api.hduhelp.com",
+      wsUrl: "wss://multica.api.hduhelp.com/ws",
+      appUrl: "https://multica.hduhelp.com",
     });
   });
 

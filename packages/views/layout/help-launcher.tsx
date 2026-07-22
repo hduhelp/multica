@@ -15,8 +15,8 @@ import { useConfigStore } from "@multica/core/config";
 import { DISCORD_URL, DiscordIcon } from "./discord";
 import { useT } from "../i18n";
 
-const DOCS_URL = "https://multica.ai/docs";
-const CHANGELOG_URL = "https://multica.ai/changelog";
+const DOCS_URL = "https://multica.hduhelp.com/docs";
+const CHANGELOG_URL = "https://multica.hduhelp.com/changelog";
 
 export function HelpLauncher() {
   const { t } = useT("layout");

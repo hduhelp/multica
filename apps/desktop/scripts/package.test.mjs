@@ -449,6 +449,9 @@ describe("electron-builder.yml packaging config", () => {
     resolve(process.cwd(), "electron-builder.yml"),
     resolve(process.cwd(), "apps/desktop/electron-builder.yml"),
   ].find((candidate) => existsSync(candidate));
+  const packagePath = configPath
+    ? resolve(configPath, "../package.json")
+    : undefined;
 
   // Extract the entries of the top-level `files:` block sequence without a
   // YAML dependency: collect the `  - "…"` items that follow `files:` up to
@@ -475,5 +478,17 @@ describe("electron-builder.yml packaging config", () => {
     const entries = readFilesBlock(readFileSync(configPath, "utf-8"));
     expect(entries.length).toBeGreaterThan(0);
     expect(entries).toContain("!dist/**");
+  });
+
+  it("publishes desktop artifacts to the HDUHelp release", () => {
+    expect(configPath, "electron-builder.yml not found").toBeTruthy();
+    const raw = readFileSync(configPath, "utf-8");
+    expect(raw).toMatch(/publish:\n(?:  .+\n)*  owner: hduhelp\n  repo: multica\n/);
+  });
+
+  it("pins pnpm so electron-builder resolves workspace dependencies correctly", () => {
+    expect(packagePath, "desktop package.json not found").toBeTruthy();
+    const pkg = JSON.parse(readFileSync(packagePath, "utf-8"));
+    expect(pkg.packageManager).toBe("pnpm@10.28.2");
   });
 });

@@ -26,9 +26,9 @@ import { useT } from "../../i18n";
 type Step = "instructions" | "success";
 
 const INSTALL_CMD =
-  "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash";
-const CLOUD_SERVER_URL = "https://api.multica.ai";
-const CLOUD_APP_URL = "https://multica.ai";
+  "curl -fsSL https://raw.githubusercontent.com/hduhelp/multica/main/scripts/install.sh | bash";
+const CLOUD_SERVER_URL = "https://multica.api.hduhelp.com";
+const CLOUD_APP_URL = "https://multica.hduhelp.com";
 
 function normalizeCommandURL(url: string | undefined) {
   return url?.trim().replace(/\/+$/, "") ?? "";

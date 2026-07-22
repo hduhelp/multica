@@ -15,9 +15,9 @@ export type RuntimeConfigResult =
 
 export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = Object.freeze({
   schemaVersion: 1,
-  apiUrl: "https://api.multica.ai",
-  wsUrl: "wss://api.multica.ai/ws",
-  appUrl: "https://multica.ai",
+  apiUrl: "https://multica.api.hduhelp.com",
+  wsUrl: "wss://multica.api.hduhelp.com/ws",
+  appUrl: "https://multica.hduhelp.com",
 });
 
 const LOCAL_DEV_RUNTIME_CONFIG: RuntimeConfig = Object.freeze({
@@ -93,18 +93,19 @@ export function deriveWsUrl(apiUrl: string): string {
   return trimTrailingSlash(url.toString());
 }
 
-// Convention: api hosts are exposed at `api.<web-host>` (api.multica.ai →
-// multica.ai, api.test.multica.ai → test.multica.ai). Strip the leading
-// `api.` label so a single `apiUrl` configuration produces the right
-// shareable web URL. Hosts that don't match the convention (no leading
-// `api.` label, or short two-label hosts like `api.local`) fall through
-// untouched — those deployments must set `appUrl` explicitly.
+// HDUHelp uses multica.api.hduhelp.com -> multica.hduhelp.com. Other Multica
+// deployments conventionally expose APIs at `api.<web-host>`
+// (api.multica.ai -> multica.ai). These mappings let a single `apiUrl`
+// configuration produce the right shareable web URL. Hosts that match neither
+// convention must set `appUrl` explicitly.
 export function deriveAppUrl(apiUrl: string): string {
   const url = new URL(apiUrl);
   url.pathname = "";
   url.search = "";
   url.hash = "";
-  if (url.hostname.startsWith("api.") && url.hostname.split(".").length >= 3) {
+  if (url.hostname === "multica.api.hduhelp.com") {
+    url.hostname = "multica.hduhelp.com";
+  } else if (url.hostname.startsWith("api.") && url.hostname.split(".").length >= 3) {
     url.hostname = url.hostname.slice("api.".length);
   }
   return trimTrailingSlash(url.toString());

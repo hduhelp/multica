@@ -18,6 +18,15 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
+func TestDefaultCloudURLsUseHDUHelp(t *testing.T) {
+	if defaultCloudServerURL != "https://multica.api.hduhelp.com" {
+		t.Fatalf("defaultCloudServerURL = %q, want hduhelp API", defaultCloudServerURL)
+	}
+	if defaultCloudAppURL != "https://multica.hduhelp.com" {
+		t.Fatalf("defaultCloudAppURL = %q, want hduhelp app", defaultCloudAppURL)
+	}
+}
+
 // freshAgentEnvSetCmd returns a standalone cobra.Command with the three
 // --custom-env* flags registered identically to agentEnvSetCmd, so
 // resolveCustomEnv-shaped tests can mutate flag state without leaking

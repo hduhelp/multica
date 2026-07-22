@@ -202,6 +202,8 @@ func TestIsOfficialCloudServer(t *testing.T) {
 		url  string
 		want bool
 	}{
+		{"hduhelp cloud https", "https://multica.api.hduhelp.com", true},
+		{"hduhelp cloud case-insensitive", "https://MULTICA.API.HDUHELP.COM", true},
 		{"canonical cloud https", "https://api.multica.ai", true},
 		{"canonical cloud with trailing slash stripped", "https://api.multica.ai/", true},
 		{"canonical cloud case-insensitive", "https://API.Multica.AI", true},
@@ -519,14 +521,12 @@ func TestLoadConfig_OpenCodeIdleWatchdog(t *testing.T) {
 }
 
 // TestLoadConfig_AutoUpdateDefault_CloudOn confirms the symmetric case: a
-// daemon pointed at Multica's hosted cloud keeps the historical opt-in
-// auto-update default. We pass the WSS form of the URL to also exercise that
-// NormalizeServerBaseURL maps it through to the http host the detector
-// inspects.
+// daemon pointed at hduhelp's hosted cloud enables auto-update by default. We
+// pass the WSS form to also exercise NormalizeServerBaseURL before detection.
 func TestLoadConfig_AutoUpdateDefault_CloudOn(t *testing.T) {
 	stageFakeAgent(t)
 	cfg, err := LoadConfig(Overrides{
-		ServerURL:      "wss://api.multica.ai/ws",
+		ServerURL:      "wss://multica.api.hduhelp.com/ws",
 		WorkspacesRoot: t.TempDir(),
 	})
 	if err != nil {
