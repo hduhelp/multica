@@ -40,6 +40,14 @@ always detect them — this table is the source of truth).
 | #5772 | repocache: repair promisor config on isolated partial-cache checkouts | our PR #12 |
 | #5753 | skills: tree-first skill import (stop 504 on large repos) | our PR #13 (reconciled with our directory-import work) |
 | #5734 | agent/codex: retry once when model-catalog refresh blocks first turn | present (patch-id identical to upstream) |
+| #5803 | runtime: clarify external background work | our PR #15 |
+| #5840 | runtime: forbid blocking on external CI in the runtime brief | our PR #15 (builds on #5803) |
+| #5780 | agents: rebind Agent Builder carrier on runtime switch | our PR #15 (sqlc regenerated for fork schema) |
+| #5759 | agent/codex: diagnose thread/start timeouts fail-closed + orphan cleanup | our PR #15 |
+| #5827 | usage: price the Grok catalog + editable custom pricing | our PR #15 |
+| #5838 | agent: stop double-counting Grok cached input tokens | our PR #15 |
+| #5746 | agents: keep creation errors visible | our PR #15 (dropped fork-absent motion scaffolding in conflict) |
+| #5715 | daemon: retry fresh session only when resume was actually rejected | already present (independent backport `af2bb9cf9`); re-cherry-pick was empty |
 
 ## Evaluated & deliberately skipped — fork has its own implementation
 
@@ -49,27 +57,11 @@ always detect them — this table is the source of truth).
 
 ---
 
-## Candidates — recommended, pending decision
+## Excluded — architecturally incompatible with the fork
 
-**Tier A — bug/reliability fixes, low conflict risk, aligned with fork focus (Grok / runtime / daemon):**
-
-| Upstream PR | What | Notes |
+| Upstream PR | What | Why excluded |
 | --- | --- | --- |
-| #5838 | agent: stop double-counting Grok cached input tokens | `hermes.go` + tests only. Real usage/billing bug; we run Grok. |
-| #5827 | usage: price the Grok catalog + keep custom pricing editable | Frontend runtimes usage-section. Pairs with #5838. |
-| #5803 | runtime: clarify external background work (runtime brief) | Small `execenv/runtime_config_sections.go`. Predecessor of #5840. |
-| #5840 | runtime: forbid blocking on external CI in the runtime brief | Small execenv change. Matches our "never deadlock / self-heal" rule. Take together with #5803. |
-| #5759 | agent/codex: diagnose thread/start timeouts fail-closed + orphan-process cleanup | Self-contained to `pkg/agent`. Reliability. |
-
-**Tier B — optional; larger surface or product features (higher conflict risk in the issue/agent area we've diverged in):**
-
-| Upstream PR | What | Notes |
-| --- | --- | --- |
-| #5746 | agents: keep creation errors visible | Frontend only. Safe UX robustness. |
-| #5715 | daemon: retry with a fresh session only when resume was actually rejected | Touches session-continuity (the resume→fresh gates). Verify against our worktree/daemon changes before taking. |
-| #5839 | issues: filter working agents by active task issues | ~540 lines, issue views + agent queries (no migration). Product behavior. |
-| #5819 | issues: unify working-agent filters across views | ~2000 lines. Bigger sibling of #5839; conflict risk with our issue/agent work. |
-| #5780 | agents: rebind Agent Builder carrier when runtime is switched | ~1300 lines, agent_builder handler + queries. Only if we lean on Agent Builder. |
+| #5819 / #5839 | issues: unify/filter working agents across issue views | Both modify `server/internal/handler/issue_table_query.go` and add server-side table queries. **This fork has no server-backed issue-table-query subsystem** (no `issue_table_query.go`, no `/issues/table` route; working agents resolve in `squad.go`). Taking them faithfully means importing the whole `#5100 → #5817 → #5820` server-grouping subsystem the fork deliberately rejected — a broad architectural change, not a PR backport. Cherry-pick aborted cleanly; no residue on `main`. Revisit only if the fork decides to adopt server-backed table grouping. |
 
 ---
 
@@ -92,3 +84,4 @@ All accounted for so they don't resurface as "new" next survey.
 ## Change log of this ledger
 
 - 2026-07-24 — Initial ledger. Surveyed upstream `dbb515b7b..139cc8920` (67 commits). Recorded 5 ported (#5748/#5752/#5772/#5753/#5734), 1 skipped-own-impl (#5686), 10 candidates, rest triaged as not-selected.
+- 2026-07-24 — Backport batch shipped (PR #15): #5803, #5840, #5780, #5759, #5827, #5838, #5746 ported and reconciled against the fork; verified (build/vet/typecheck, backport unit+component tests, 9/9 semantic-review workflow, live dev-browser smoke). #5715 found already-present (`af2bb9cf9`). #5819/#5839 excluded as architecturally incompatible (no server-backed issue-table subsystem). Released services: backend `0.4.11`, web `0.4.12`, chart `0.1.4`.
