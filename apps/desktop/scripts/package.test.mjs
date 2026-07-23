@@ -483,7 +483,9 @@ describe("electron-builder.yml packaging config", () => {
   it("publishes desktop artifacts to the HDUHelp release", () => {
     expect(configPath, "electron-builder.yml not found").toBeTruthy();
     const raw = readFileSync(configPath, "utf-8");
-    expect(raw).toMatch(/publish:\n(?:  .+\n)*  owner: hduhelp\n  repo: multica\n/);
+    expect(raw).toMatch(
+      /publish:\n(?: {2}.+\n)* {2}owner: hduhelp\n {2}repo: multica\n/,
+    );
   });
 
   it("pins pnpm so electron-builder resolves workspace dependencies correctly", () => {
