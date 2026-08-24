@@ -26,6 +26,7 @@ func TestFixedRepoPrepareRunsInUserDirectoryAndProtectsIt(t *testing.T) {
 	env, err := Prepare(PrepareParams{
 		WorkspacesRoot: workspacesRoot,
 		WorkspaceID:    "ws-fixed-001",
+		Provider:       "codex",
 		TaskID:         "c0ffee00-dead-beef-cafe-000000000001",
 		AgentName:      "Fixed Repo Agent",
 		// LocalWorkDir redirects the agent's cwd to the pre-existing directory —
@@ -54,11 +55,22 @@ func TestFixedRepoPrepareRunsInUserDirectoryAndProtectsIt(t *testing.T) {
 		t.Fatal("expected env.LocalDirectory=true so GC never deletes the user directory")
 	}
 
-	// The brief is written inside the user's directory and carries the Fixed
-	// Repo guidance (path + checkout ban).
-	brief, err := os.ReadFile(filepath.Join(fixedRepo, ".agent_context", "issue_context.md"))
+	// The runtime brief carries the Fixed Repo guidance (path + checkout ban).
+	// It lives in the brief, not in issue_context.md: behavioural rules moved to
+	// the runtime config file in MUL-5529, leaving issue_context.md carrying
+	// task data only. Prepare does not write it — the daemon injects it into the
+	// prepared WorkDir as a separate step, which is what this mirrors.
+	if _, err := InjectRuntimeConfig(env.WorkDir, "codex", TaskContextForEnv{
+		IssueID:          "c0ffee00-dead-beef-cafe-000000000001",
+		FixedRepoMode:    true,
+		FixedRepoPath:    fixedRepo,
+		FixedRepoVcsType: "git",
+	}); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	brief, err := os.ReadFile(filepath.Join(fixedRepo, "AGENTS.md"))
 	if err != nil {
-		t.Fatalf("read brief in fixed repo: %v", err)
+		t.Fatalf("read runtime brief in fixed repo: %v", err)
 	}
 	for _, want := range []string{"## Fixed Repo", fixedRepo, "multica repo checkout"} {
 		if !strings.Contains(string(brief), want) {
