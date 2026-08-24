@@ -7,13 +7,13 @@ The `multica` CLI connects your local machine to Multica. It handles authenticat
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew install multica-ai/tap/multica
+brew install hduhelp/tap/multica
 ```
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/multica-ai/multica.git
+git clone https://github.com/hduhelp/multica.git
 cd multica
 make build
 cp server/bin/multica /usr/local/bin/multica
@@ -22,7 +22,7 @@ cp server/bin/multica /usr/local/bin/multica
 ### Update
 
 ```bash
-brew upgrade multica-ai/tap/multica
+brew upgrade hduhelp/tap/multica
 ```
 
 For install script or manual installs, use:
