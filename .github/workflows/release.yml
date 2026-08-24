@@ -184,6 +184,12 @@ jobs:
           pull: true
           push: true
           platforms: ${{ matrix.platform }}
+          # Aliyun ACR rejects the OCI empty descriptor that buildx writes for
+          # attestation manifests ("unknown manifest class for
+          # application/vnd.oci.empty.v1+json"), which fails the push for every
+          # platform. Neither attestation is consumed by our deploy path.
+          provenance: false
+          sbom: false
           cache-from: type=gha,scope=release-backend-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=release-backend-${{ env.PLATFORM_PAIR }}
           build-args: |
@@ -285,6 +291,12 @@ jobs:
           pull: true
           push: true
           platforms: ${{ matrix.platform }}
+          # Aliyun ACR rejects the OCI empty descriptor that buildx writes for
+          # attestation manifests ("unknown manifest class for
+          # application/vnd.oci.empty.v1+json"), which fails the push for every
+          # platform. Neither attestation is consumed by our deploy path.
+          provenance: false
+          sbom: false
           cache-from: type=gha,scope=release-web-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=release-web-${{ env.PLATFORM_PAIR }}
           build-args: |
