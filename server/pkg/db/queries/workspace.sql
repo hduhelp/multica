@@ -170,6 +170,12 @@ cleared_binding_tokens AS (
 cleared_installations AS (
     DELETE FROM channel_installation WHERE workspace_id = $1
 ),
+cleared_fixed_repo_locks AS (
+    -- Fixed repo path locks are workspace-scoped. Without this the rows outlive
+    -- the workspace: nothing else reaps them, and the (agent_id, path) partial
+    -- unique index would keep a deleted workspace's path claimed.
+    DELETE FROM agent_fixed_repo_lock WHERE workspace_id = $1
+),
 cleared_issue_properties AS (
     DELETE FROM issue_property WHERE workspace_id = $1
 ),
