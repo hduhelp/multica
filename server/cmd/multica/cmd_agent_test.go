@@ -471,7 +471,7 @@ func TestResolveToken_AgentContextSkipsConfig(t *testing.T) {
 		t.Setenv("MULTICA_TASK_ID", "")
 		t.Setenv("MULTICA_TOKEN", "")
 		t.Setenv("MULTICA_DAEMON_PORT", "")
-		t.Setenv("MULTICA_SERVER_URL", "https://api.multica.ai")
+		t.Setenv("MULTICA_SERVER_URL", "https://multica.api.hduhelp.com")
 
 		if got := resolveToken(testCmd()); got != "mul_profile_token" {
 			t.Fatalf("resolveToken() = %q, want profile token (SERVER_URL is not a daemon identity signal)", got)

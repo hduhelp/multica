@@ -503,7 +503,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 
 	// Auto-update config: default -> env override -> CLI override.
 	//
-	// Default is opt-in on Multica Cloud (api.multica.ai) and opt-out for
+	// Default is opt-in on Multica Cloud (multica.api.hduhelp.com) and opt-out for
 	// self-hosted instances. Self-host operators frequently run a fork with
 	// their own patches, and silently upgrading their daemon to an upstream
 	// GitHub release would clobber that work; they also commonly stay on an
@@ -579,11 +579,17 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	}, nil
 }
 
-// officialCloudHost is the hostname of Multica's hosted cloud. It's the only
-// origin we treat as "official" for the auto-update default — staging,
-// preview, and any future *.multica.ai subdomains are deliberately excluded
-// so they inherit the safer self-host default until explicitly opted in.
-const officialCloudHost = "api.multica.ai"
+// officialCloudHost is this distribution's hosted cloud, and upstreamCloudHost
+// is multica-ai's. Both are treated as "official" for the auto-update default:
+// hduhelp is the default this build points at, and the upstream cloud stays
+// recognized for anyone who explicitly configured it before or after moving to
+// this distribution. Staging, preview, and any other subdomain are deliberately
+// excluded so they inherit the safer self-host default until explicitly opted
+// in.
+const (
+	officialCloudHost = "multica.api.hduhelp.com"
+	upstreamCloudHost = "api.multica.ai"
+)
 
 // isOfficialCloudServer reports whether the resolved server base URL points
 // at Multica's hosted cloud. Used to pick defaults that are safe on
@@ -598,7 +604,8 @@ func isOfficialCloudServer(baseURL string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(u.Hostname(), officialCloudHost)
+	host := u.Hostname()
+	return strings.EqualFold(host, officialCloudHost) || strings.EqualFold(host, upstreamCloudHost)
 }
 
 // defaultGCCompletedTaskTTL picks the completed-task retention default from the

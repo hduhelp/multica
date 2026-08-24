@@ -23,7 +23,7 @@ STUB
   cat >"$stub_bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$*" == *"-sI"* ]]; then
-  printf 'HTTP/2 302\r\nlocation: https://github.com/multica-ai/multica/releases/tag/v0.3.2\r\n'
+  printf 'HTTP/2 302\r\nlocation: https://github.com/hduhelp/multica/releases/tag/v0.3.2\r\n'
   exit 0
 fi
 
@@ -166,7 +166,7 @@ STUB
     cat "$tmp/install.out" >&2 || true
     return 1
   fi
-  if ! grep -q "https://multica.ai/settings?tab=tokens" "$tmp/install.out"; then
+  if ! grep -q "https://multica.hduhelp.com/settings?tab=tokens" "$tmp/install.out"; then
     echo "expected direct API Tokens settings URL in installer output" >&2
     cat "$tmp/install.out" >&2 || true
     return 1

@@ -11,9 +11,9 @@ describe("runtime config", () => {
   it("uses cloud defaults without a desktop.json file", () => {
     expect(DEFAULT_RUNTIME_CONFIG).toEqual({
       schemaVersion: 1,
-      apiUrl: "https://api.multica.ai",
-      wsUrl: "wss://api.multica.ai/ws",
-      appUrl: "https://multica.ai",
+      apiUrl: "https://multica.api.hduhelp.com",
+      wsUrl: "wss://multica.api.hduhelp.com/ws",
+      appUrl: "https://multica.hduhelp.com",
     });
   });
 
@@ -36,13 +36,13 @@ describe("runtime config", () => {
   it("strips the leading api. label when deriving appUrl", () => {
     expect(
       parseRuntimeConfig(
-        JSON.stringify({ schemaVersion: 1, apiUrl: "https://api.multica.ai" }),
+        JSON.stringify({ schemaVersion: 1, apiUrl: "https://multica.api.hduhelp.com" }),
       ),
     ).toEqual({
       schemaVersion: 1,
-      apiUrl: "https://api.multica.ai",
-      wsUrl: "wss://api.multica.ai/ws",
-      appUrl: "https://multica.ai",
+      apiUrl: "https://multica.api.hduhelp.com",
+      wsUrl: "wss://multica.api.hduhelp.com/ws",
+      appUrl: "https://multica.hduhelp.com",
     });
   });
 
@@ -127,26 +127,26 @@ describe("runtime config", () => {
     // api at `api.<web-host>`, so stripping the leading label gives the
     // right web origin without a separate VITE_APP_URL.
     expect(
-      runtimeConfigFromDevEnv({ apiUrl: "https://api.test.multica.ai" }),
+      runtimeConfigFromDevEnv({ apiUrl: "https://api.test.multica.hduhelp.com" }),
     ).toEqual({
       schemaVersion: 1,
-      apiUrl: "https://api.test.multica.ai",
-      wsUrl: "wss://api.test.multica.ai/ws",
-      appUrl: "https://test.multica.ai",
+      apiUrl: "https://api.test.multica.hduhelp.com",
+      wsUrl: "wss://api.test.multica.hduhelp.com/ws",
+      appUrl: "https://test.multica.hduhelp.com",
     });
   });
 
   it("dev VITE_APP_URL still wins over apiUrl-derived value", () => {
     expect(
       runtimeConfigFromDevEnv({
-        apiUrl: "https://api.test.multica.ai",
-        appUrl: "https://staging.multica.ai",
+        apiUrl: "https://api.test.multica.hduhelp.com",
+        appUrl: "https://staging.multica.hduhelp.com",
       }),
     ).toEqual({
       schemaVersion: 1,
-      apiUrl: "https://api.test.multica.ai",
-      wsUrl: "wss://api.test.multica.ai/ws",
-      appUrl: "https://staging.multica.ai",
+      apiUrl: "https://api.test.multica.hduhelp.com",
+      wsUrl: "wss://api.test.multica.hduhelp.com/ws",
+      appUrl: "https://staging.multica.hduhelp.com",
     });
   });
 });

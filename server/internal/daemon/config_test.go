@@ -194,11 +194,11 @@ func TestDefaultGCCompletedTaskTTLOnlyBoundsOfficialCloudHost(t *testing.T) {
 		serverURL string
 		want      time.Duration
 	}{
-		{"official cloud", "https://api.multica.ai", DefaultGCCompletedTaskTTLCloud},
+		{"official cloud", "https://multica.api.hduhelp.com", DefaultGCCompletedTaskTTLCloud},
 		{"official cloud with port and path", "https://API.Multica.AI:443/api", DefaultGCCompletedTaskTTLCloud},
 		// Staging and previews inherit the self-host value for the same reason
 		// officialCloudHost excludes them from the auto-update default.
-		{"staging", "https://api-staging.multica.ai", DefaultGCCompletedTaskTTLSelfHost},
+		{"staging", "https://api-staging.multica.hduhelp.com", DefaultGCCompletedTaskTTLSelfHost},
 		{"self-host", "https://multica.example.com", DefaultGCCompletedTaskTTLSelfHost},
 		{"localhost", "http://localhost:8080", DefaultGCCompletedTaskTTLSelfHost},
 		{"unparseable", "://nope", DefaultGCCompletedTaskTTLSelfHost},
@@ -393,19 +393,19 @@ func TestIsOfficialCloudServer(t *testing.T) {
 		url  string
 		want bool
 	}{
-		{"canonical cloud https", "https://api.multica.ai", true},
-		{"canonical cloud with trailing slash stripped", "https://api.multica.ai/", true},
+		{"canonical cloud https", "https://multica.api.hduhelp.com", true},
+		{"canonical cloud with trailing slash stripped", "https://multica.api.hduhelp.com/", true},
 		{"canonical cloud case-insensitive", "https://API.Multica.AI", true},
-		{"cloud over plain http (unusual but match host)", "http://api.multica.ai", true},
+		{"cloud over plain http (unusual but match host)", "http://multica.api.hduhelp.com", true},
 		{"localhost is self-host", "http://localhost:8080", false},
 		{"loopback ip is self-host", "http://127.0.0.1:8080", false},
 		{"lan ip is self-host", "http://192.168.0.28:8080", false},
 		{"third-party host is self-host", "https://multica.example.com", false},
 		// Staging / preview / future subdomains deliberately follow the
 		// safer self-host default until explicitly opted in.
-		{"multica.ai apex is not the api host", "https://multica.ai", false},
-		{"staging subdomain is self-host", "https://staging.multica.ai", false},
-		{"preview subdomain is self-host", "https://api-preview.multica.ai", false},
+		{"multica.hduhelp.com apex is not the api host", "https://multica.hduhelp.com", false},
+		{"staging subdomain is self-host", "https://staging.multica.hduhelp.com", false},
+		{"preview subdomain is self-host", "https://api-preview.multica.hduhelp.com", false},
 		// Malformed inputs must not falsely match.
 		{"empty string is self-host", "", false},
 		{"garbage string is self-host", "::not a url::", false},
@@ -810,7 +810,7 @@ func TestLoadConfig_OpenCodeIdleWatchdog(t *testing.T) {
 func TestLoadConfig_AutoUpdateDefault_CloudOn(t *testing.T) {
 	stageFakeAgent(t)
 	cfg, err := LoadConfig(Overrides{
-		ServerURL:      "wss://api.multica.ai/ws",
+		ServerURL:      "wss://multica.api.hduhelp.com/ws",
 		WorkspacesRoot: t.TempDir(),
 	})
 	if err != nil {
@@ -844,7 +844,7 @@ func TestLoadConfig_AutoUpdateEnv_ForcesOffForCloud(t *testing.T) {
 	stageFakeAgent(t)
 	t.Setenv("MULTICA_DAEMON_AUTO_UPDATE", "false")
 	cfg, err := LoadConfig(Overrides{
-		ServerURL:      "https://api.multica.ai",
+		ServerURL:      "https://multica.api.hduhelp.com",
 		WorkspacesRoot: t.TempDir(),
 	})
 	if err != nil {
@@ -862,7 +862,7 @@ func TestLoadConfig_AutoUpdate_NoFlagWinsOverCloudDefault(t *testing.T) {
 	stageFakeAgent(t)
 	t.Setenv("MULTICA_DAEMON_AUTO_UPDATE", "true")
 	cfg, err := LoadConfig(Overrides{
-		ServerURL:         "https://api.multica.ai",
+		ServerURL:         "https://multica.api.hduhelp.com",
 		WorkspacesRoot:    t.TempDir(),
 		DisableAutoUpdate: true,
 	})
@@ -907,7 +907,7 @@ func TestLoadConfig_AutoReload_NotGatedOnAutoUpdateEnv(t *testing.T) {
 	t.Setenv("MULTICA_DAEMON_AUTO_UPDATE", "false")
 	t.Setenv("MULTICA_DAEMON_AUTO_RELOAD", "")
 	cfg, err := LoadConfig(Overrides{
-		ServerURL:      "https://api.multica.ai",
+		ServerURL:      "https://multica.api.hduhelp.com",
 		WorkspacesRoot: t.TempDir(),
 	})
 	if err != nil {
@@ -939,7 +939,7 @@ func TestLoadConfig_AutoReload_OffSwitches(t *testing.T) {
 			stageFakeAgent(t)
 			t.Setenv("MULTICA_DAEMON_AUTO_RELOAD", tc.env)
 			overrides := tc.overrides
-			overrides.ServerURL = "https://api.multica.ai"
+			overrides.ServerURL = "https://multica.api.hduhelp.com"
 			overrides.WorkspacesRoot = t.TempDir()
 			cfg, err := LoadConfig(overrides)
 			if err != nil {
