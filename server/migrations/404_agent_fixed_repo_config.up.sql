@@ -1,8 +1,8 @@
 ALTER TABLE agent
-    ADD COLUMN fixed_repo_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN fixed_repo_paths JSONB NOT NULL DEFAULT '[]',
-    ADD COLUMN fixed_repo_vcs_type TEXT NOT NULL DEFAULT 'git',
-    ADD COLUMN fixed_repo_cleanup_script TEXT;
+    ADD COLUMN IF NOT EXISTS fixed_repo_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS fixed_repo_paths JSONB NOT NULL DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS fixed_repo_vcs_type TEXT NOT NULL DEFAULT 'git',
+    ADD COLUMN IF NOT EXISTS fixed_repo_cleanup_script TEXT;
 
 ALTER TABLE agent
     ADD CONSTRAINT agent_fixed_repo_paths_array_check

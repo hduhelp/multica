@@ -6,4 +6,4 @@
 -- two independently-updatable fields and a table constraint would reject
 -- otherwise-valid intermediate states during a two-step config edit.
 ALTER TABLE agent
-    ADD COLUMN fixed_repo_worktree BOOLEAN NOT NULL DEFAULT FALSE;
+    ADD COLUMN IF NOT EXISTS fixed_repo_worktree BOOLEAN NOT NULL DEFAULT FALSE;

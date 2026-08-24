@@ -17,7 +17,7 @@
 -- The two active-lock uniqueness guarantees (one active lock per (agent, path)
 -- and one active lock per task) are enforced by partial unique indexes built
 -- CONCURRENTLY in follow-up single-statement migrations 204 and 205.
-CREATE TABLE agent_fixed_repo_lock (
+CREATE TABLE IF NOT EXISTS agent_fixed_repo_lock (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
     agent_id     UUID NOT NULL,
