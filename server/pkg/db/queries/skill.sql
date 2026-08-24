@@ -50,6 +50,19 @@ DELETE FROM skill WHERE id = $1 AND workspace_id = $2;
 
 -- Skill File CRUD
 
+-- name: ListRemoteOriginSkills :many
+-- Every skill that carries a re-fetchable URL origin, across all workspaces.
+-- Backs the hourly remote-skill sync job: an imported skill stores its source in
+-- config.origin.source_url. Plugin-owned skills are excluded — their content
+-- belongs to the plugin installation, which has its own update path, not to a
+-- tracked URL. Ordered oldest-updated first so a run cut short by the job
+-- timeout still makes progress on the most stale skills.
+SELECT * FROM skill
+WHERE config->'origin'->>'source_url' IS NOT NULL
+  AND config->'origin'->>'source_url' <> ''
+  AND plugin_installation_id IS NULL
+ORDER BY updated_at ASC NULLS FIRST;
+
 -- name: ListSkillFiles :many
 SELECT * FROM skill_file
 WHERE skill_id = $1

@@ -368,14 +368,59 @@ func (q *Queries) ListAgentSkillsByWorkspace(ctx context.Context, workspaceID pg
 	return items, nil
 }
 
-const listSkillFiles = `-- name: ListSkillFiles :many
+const listRemoteOriginSkills = `-- name: ListRemoteOriginSkills :many
 
+SELECT id, workspace_id, name, description, content, config, created_by, created_at, updated_at, plugin_installation_id FROM skill
+WHERE config->'origin'->>'source_url' IS NOT NULL
+  AND config->'origin'->>'source_url' <> ''
+  AND plugin_installation_id IS NULL
+ORDER BY updated_at ASC NULLS FIRST
+`
+
+// Skill File CRUD
+// Every skill that carries a re-fetchable URL origin, across all workspaces.
+// Backs the hourly remote-skill sync job: an imported skill stores its source in
+// config.origin.source_url. Plugin-owned skills are excluded — their content
+// belongs to the plugin installation, which has its own update path, not to a
+// tracked URL. Ordered oldest-updated first so a run cut short by the job
+// timeout still makes progress on the most stale skills.
+func (q *Queries) ListRemoteOriginSkills(ctx context.Context) ([]Skill, error) {
+	rows, err := q.db.Query(ctx, listRemoteOriginSkills)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Skill{}
+	for rows.Next() {
+		var i Skill
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.Description,
+			&i.Content,
+			&i.Config,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PluginInstallationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSkillFiles = `-- name: ListSkillFiles :many
 SELECT id, skill_id, path, content, created_at, updated_at FROM skill_file
 WHERE skill_id = $1
 ORDER BY path ASC
 `
 
-// Skill File CRUD
 func (q *Queries) ListSkillFiles(ctx context.Context, skillID pgtype.UUID) ([]SkillFile, error) {
 	rows, err := q.db.Query(ctx, listSkillFiles, skillID)
 	if err != nil {
