@@ -1,0 +1,97 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: multica
+  namespace: argo-cd
+  labels:
+    app.kubernetes.io/part-of: multica
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/hduhelp/charts
+    chart: multica
+    targetRevision: '*-0'
+    helm:
+      releaseName: multica
+      parameters:
+        - name: backend.config.cookieDomain
+          value: .hduhelp.com
+      values: |
+        ---
+        existingSecret: multica-secrets
+        images:
+          backend:
+            repository: ghcr.io/hduhelp/multica-backend
+            pullPolicy: IfNotPresent
+          frontend:
+            repository: registry.ap-northeast-1.aliyuncs.com/hduhelp/multica-web
+            pullPolicy: IfNotPresent
+        postgres:
+          external:
+            enabled: true
+        backend:
+          replicas: 1
+          uploads:
+            persistence:
+              enabled: false
+          config:
+            appEnv: production
+            appUrl: https://multica.hduhelp.com
+            frontendOrigin: https://multica.hduhelp.com
+            corsAllowedOrigins: https://multica.hduhelp.com
+            googleRedirectUri: https://multica.hduhelp.com/auth/callback
+            s3Bucket: hduhelp-multicas
+            s3Region: cn-hangzhou
+            localUploadBaseUrl: https://multica.api.hduhelp.com
+            allowSignup: true
+            disableWorkspaceCreation: false
+            cloudfrontDomain: hduhelp-multicas.oss-cn-hangzhou.aliyuncs.com
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+        frontend:
+          replicas: 1
+          compatibility:
+            backendAlias: true
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values:
+                          - hz-k
+        ingress:
+          enabled: true
+          className: traefik
+          annotations:
+            traefik.ingress.kubernetes.io/router.entrypoints: websecure
+          frontend:
+            host: multica.hduhelp.com
+          backend:
+            host: multica.api.hduhelp.com
+          tls:
+            - hosts:
+                - multica.hduhelp.com
+                - multica.api.hduhelp.com
+              secretName: hduhelp-cert
+        imagePullSecrets:
+          - name: aliyun-ap-northeast-1-regcred
+  destination:
+    namespace: hduhelp
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
