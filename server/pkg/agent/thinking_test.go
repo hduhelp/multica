@@ -857,6 +857,35 @@ func TestValidateThinkingLevel_PreEffortCLIRejectsAllLevels(t *testing.T) {
 	}
 }
 
+// TestClaudeOpus46RejectsXhigh pins the per-model catalog: xhigh arrived with
+// Opus 4.7, so Opus 4.6 does not support it and silently degrades to high.
+// max IS supported on 4.6.
+func TestClaudeOpus46RejectsXhigh(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+	resetThinkingCacheForTests()
+	defer resetThinkingCacheForTests()
+
+	ctx := context.Background()
+	fakeClaude := writeFakeClaudeHelpBinary(t)
+
+	ok, err := ValidateThinkingLevel(ctx, "claude", Command{Path: fakeClaude}, "claude-opus-4-6", "xhigh")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ok {
+		t.Error("xhigh must be invalid on opus-4-6")
+	}
+	ok, err = ValidateThinkingLevel(ctx, "claude", Command{Path: fakeClaude}, "claude-opus-4-6", "max")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !ok {
+		t.Error("max should be valid on opus-4-6")
+	}
+}
+
 func TestValidateThinkingLevel_OpenCodeEmptyModelUsesAdvertisedVariants(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake binary requires a POSIX shell")
