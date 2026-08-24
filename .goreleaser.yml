@@ -64,22 +64,7 @@ changelog:
       - "^test:"
       - "^chore:"
 
-brews:
-  - name: multica
-    ids:
-      - versioned
-    repository:
-      owner: hduhelp
-      name: homebrew-tap
-      branch: main
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/hduhelp/multica"
-    description: "Multica CLI — local agent runtime and management tool for the Multica platform"
-    # No license stanza: Multica ships under the Multica License (Apache 2.0
-    # terms with additional conditions, see LICENSE), which has no SPDX
-    # identifier, so declaring "Apache-2.0" here would be a false claim.
-    install: |
-      bin.install "multica"
-    test: |
-      system "#{bin}/multica", "version"
+# No `brews:` block: this fork does not have HOMEBREW_TAP_GITHUB_TOKEN, so
+# letting goreleaser publish the formula would 401 and fail the whole release.
+# hduhelp/homebrew-tap is maintained outside this pipeline, and scripts/install.sh
+# already falls back to the GitHub Releases binaries when the tap is unavailable.
