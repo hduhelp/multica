@@ -99,6 +99,40 @@ backend:
   # leader-elected workload split — increase this only if you actually
   # need horizontal scale of the API/WS server.
   replicas: 1
+
+  # Deployment update strategy.
+  #
+  # Recreate is the default because it is the only safe choice for a
+  # single-replica install that still mounts the uploads PVC below: a
+  # ReadWriteOnce volume cannot be attached to the old and new pod at once, so
+  # a rolling update would deadlock on Multi-Attach. It also guarantees the old
+  # code never sees the new schema, since the backend entrypoint migrates
+  # before it starts.
+  #
+  # The cost is that the pod is down for the whole image pull + migrate + boot,
+  # and that the old pod is killed before anything proves the new one works.
+  # Where availability matters more — S3-backed uploads (persistence disabled,
+  # so no RWO volume), a registry the cluster pulls quickly — switch to:
+  #
+  #   strategy:
+  #     type: RollingUpdate
+  #     rollingUpdate:
+  #       maxUnavailable: 0
+  #       maxSurge: 1
+  #
+  # maxUnavailable: 0 keeps the old pod serving until the new one passes its
+  # readiness probe, which also makes a failed pull or a failed migration a
+  # non-event instead of an outage.
+  #
+  # Read this before switching: a rolling update overlaps the two versions
+  # against ONE database. The new pod migrates at boot, so the old pod serves
+  # against the migrated schema until it is terminated — tens of seconds. That
+  # is harmless for an additive migration and breaks the old pod on a
+  # destructive one (dropped column, narrowed type). Pin a release that carries
+  # destructive DDL back to Recreate; TestUpMigrationsAreAdditive in
+  # server/cmd/migrate lists which migrations those are.
+  strategy:
+    type: Recreate
   uploads:
     persistence:
       # When true (default) the chart provisions a PersistentVolumeClaim for

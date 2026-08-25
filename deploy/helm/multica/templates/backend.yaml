@@ -29,10 +29,19 @@ spec:
   # The backend entrypoint runs migrations before starting. Concurrent
   # runs are protected by a Postgres advisory lock in cmd/migrate (see
   # GitHub multica-ai/multica#3647), so multiple replicas no longer race;
-  # 1 is still the chart default (strategy: Recreate, no leader split).
+  # 1 is still the chart default.
   replicas: {{ .Values.backend.replicas }}
   strategy:
-    type: Recreate
+    type: {{ .Values.backend.strategy.type }}
+    {{- /* rollingUpdate is rejected by the API server under type: Recreate.
+           Helm deep-merges maps, so an override file that switches type back
+           to Recreate without also removing rollingUpdate would produce an
+           invalid Deployment; gate the block on the type instead of trusting
+           the caller to keep the two in step. */}}
+    {{- if and (eq .Values.backend.strategy.type "RollingUpdate") .Values.backend.strategy.rollingUpdate }}
+    rollingUpdate:
+      {{- toYaml .Values.backend.strategy.rollingUpdate | nindent 6 }}
+    {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: multica
