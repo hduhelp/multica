@@ -203,14 +203,20 @@ func TestEnrichMergeForward(t *testing.T) {
 
 	out := enrich(t, fake, in, InboundEnricherConfig{})
 
+	// The forward carries an image nobody inlined, so the body is stamped with
+	// its source; the transcript itself is what this test is about.
+	header, body := splitSourceHeader(out.Body)
+	if !strings.Contains(header, `channel="feishu"`) {
+		t.Errorf("forward with referenced media should be stamped: %q", out.Body)
+	}
 	want := `<forwarded_messages count="4" message_id="om_forward">
 [User 1]: 你们线上的 Multica 能用吗
 [User 1]: 我这边无法登录
 [User 2]: 我这边 web 和 desktop 都能登陆
 [User 1]: [Image message_id=c4 image_key=img_x]
 </forwarded_messages>`
-	if out.Body != want {
-		t.Errorf("body\n got = %q\nwant = %q", out.Body, want)
+	if body != want {
+		t.Errorf("body\n got = %q\nwant = %q", body, want)
 	}
 }
 

@@ -170,13 +170,15 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	wantQuoted := msg.ParentID != "" && msg.ThreadID == ""
 	if !wantQuoted && !isForward && !wantRecent {
 		// Nothing to expand and no group prefetch wanted — no network call.
-		return msg
+		// Still stamped: a p2p image needs its source named as much as a
+		// group thread does.
+		return e.stampSource(msg)
 	}
 	// If the transport isn't wired (stub client on a deployment without
 	// a Lark app), skip rather than stamp every reply with a fetch
 	// error. Body stays whatever the decoder produced.
 	if e.client == nil || !e.client.IsConfigured() {
-		return msg
+		return e.stampSource(msg)
 	}
 
 	// Phase 1 — fetch every set of messages we may render. Each is
@@ -256,7 +258,56 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	b.WriteString(core)
 
 	msg.Body = b.String()
+	return e.stampSource(msg)
+}
+
+// sourceHandleTokens mark content that is REFERENCED but not inlined — the
+// only case where naming the platform buys anything. A bare message_id= is
+// excluded on purpose: a <quoted_message> or <forwarded_messages> block carries
+// its id while already inlining the text, so there is nothing left to resolve
+// and a header there would be pure overhead on the most common group message.
+var sourceHandleTokens = []string{
+	"image_key=", "file_key=", "chat_id=", "user_id=",
+	"[forwarded messages message_id=",
+}
+
+// stampSource names the channel a body came from when that body carries
+// resource handles. Without it the handles are inert: an agent reading
+// "[Image message_id=om_x image_key=img_y]" has the id but no idea which
+// platform's API resolves it, so it cannot reach for the right client.
+//
+// It is deliberately conditional. This Body is persisted into the turn's
+// chat_message.content and replayed as history, so a plain text message must
+// not carry a paragraph of handle documentation forever.
+func (e *inboundEnricher) stampSource(msg InboundMessage) InboundMessage {
+	if msg.Body == "" || !hasResourceHandle(msg.Body) {
+		return msg
+	}
+	var attrs strings.Builder
+	attrs.WriteString(`<source channel="feishu"`)
+	if msg.ChatID != "" {
+		fmt.Fprintf(&attrs, " chat_id=%q", string(msg.ChatID))
+	}
+	if msg.ChatType != "" {
+		fmt.Fprintf(&attrs, " chat_type=%q", string(msg.ChatType))
+	}
+	if msg.MessageID != "" {
+		fmt.Fprintf(&attrs, " message_id=%q", msg.MessageID)
+	}
+	attrs.WriteString(">\nBracketed handles below are Feishu/Lark open-platform resource ids; " +
+		"media is referenced, not inlined. Resolve a handle through a Feishu/Lark API client to read it.\n</source>")
+
+	msg.Body = attrs.String() + "\n\n" + msg.Body
 	return msg
+}
+
+func hasResourceHandle(body string) bool {
+	for _, tok := range sourceHandleTokens {
+		if strings.Contains(body, tok) {
+			return true
+		}
+	}
+	return false
 }
 
 // senderOpenIDs returns the distinct non-app sender open_ids across the
