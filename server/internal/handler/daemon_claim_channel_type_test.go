@@ -18,10 +18,11 @@ import (
 // mis-flag made the daemon inject `multica attachment upload` guidance into a
 // conversation that cannot carry attachments at all.
 //
-// chat_in_thread stays Slack-only and is asserted as such: it selects between
-// `multica chat history` and `multica chat thread`, and both endpoints are
-// hardwired to h.SlackHistory (chat_history.go). There is no Feishu reader, so
-// the flag has nothing to select between and must not imply one exists.
+// chat_in_thread is asserted per channel: it selects between `multica chat
+// history` and `multica chat thread`, and those endpoints are dispatched by
+// channel type (chat_history.go). Slack and Feishu each have a reader, so both
+// may set it; a channel with no reader must leave it false rather than
+// advertising a command that would answer "no channel integration".
 
 // seedChannelBinding binds sessionID to a group room on an IM channel of
 // channelType, creating the installation the binding requires. This is the row
@@ -98,8 +99,9 @@ func TestClaim_FeishuBoundSessionReportsChannelType(t *testing.T) {
 	}
 	ctx := context.Background()
 	agentID, sessionID, runtimeID, _ := setupDirectChatSession(t, ctx, "feishu-backed chat")
-	// last_thread_id != last_message_id: the shape that would set ChatInThread on
-	// Slack. Feishu must still report false — there is no reader to thread into.
+	// A Lark topic id is never a message id, so its presence alone means the
+	// trigger arrived inside a topic and `multica chat thread` is the read that
+	// applies.
 	seedChannelBinding(t, ctx, agentID, sessionID, "feishu", "msg-1", "thread-9")
 	insertChannelChatTask(t, ctx, agentID, runtimeID, sessionID)
 	requeueTaskForClaim(t, ctx, sessionID)
@@ -108,8 +110,8 @@ func TestClaim_FeishuBoundSessionReportsChannelType(t *testing.T) {
 	if claimed.ChannelType != "feishu" {
 		t.Errorf("chat_channel_type = %q, want %q — a Feishu session must not look like a web chat", claimed.ChannelType, "feishu")
 	}
-	if claimed.InThread {
-		t.Error("chat_in_thread must stay false on Feishu: it selects between two Slack-only read commands")
+	if !claimed.InThread {
+		t.Error("chat_in_thread must be true for a Feishu session inside a topic — that is what selects `multica chat thread`")
 	}
 }
 
@@ -156,7 +158,7 @@ func TestClaim_UnlistedChannelBoundSessionReportsChannelType(t *testing.T) {
 		t.Errorf("chat_channel_type = %q, want %q — a channel the handler does not name must not look like a web chat", claimed.ChannelType, "wecom")
 	}
 	if claimed.InThread {
-		t.Error("chat_in_thread must stay false off Slack: it selects between two Slack-only read commands")
+		t.Error("chat_in_thread must stay false on a channel with no history reader: there is no read for it to select")
 	}
 }
 

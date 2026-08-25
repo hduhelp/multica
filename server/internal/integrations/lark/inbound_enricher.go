@@ -642,6 +642,13 @@ func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID st
 // context, not a fresh trigger, so passing empty bot identifiers leaves
 // every @-mention rendered as a readable @name.
 func (e *inboundEnricher) flattenMessage(m LarkMessage) string {
+	return flattenLarkMessage(m)
+}
+
+// flattenLarkMessage renders one REST message to plain text. Package-level so
+// the on-demand history reader, which has no enricher, renders identically to
+// the inbound path.
+func flattenLarkMessage(m LarkMessage) string {
 	if m.Deleted {
 		return "[deleted message]"
 	}

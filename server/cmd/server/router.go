@@ -502,6 +502,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// continues to start so self-host deployments that have not opted
 	// in to Lark are unaffected. Feishu registers its Factory + ResolverSet
 	// into the channel engine above.
+	// On-demand history readers, keyed by channel type. Slack and Lark each
+	// register below when their integration is configured; the dispatcher over
+	// them is built after both, so `multica chat history` serves whichever
+	// channel the session is actually bound to (MUL-3871).
+	chatHistoryReaders := map[string]handler.ChatChannelHistoryReader{}
+
 	if larkKey, err := secretbox.LoadKey("MULTICA_LARK_SECRET_KEY"); err == nil {
 		box, err := secretbox.New(larkKey)
 		if err != nil {
@@ -546,6 +552,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				cs := lark.NewChannelStore(queries)
 				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{})
 				patcher.Register(bus)
+
+				// Pull the session's Feishu conversation when the agent asks for
+				// it, instead of force-assembling it on every inbound. Reuses the
+				// channel store's binding/installation lookups and the shared
+				// APIClient.
+				chatHistoryReaders[string(channel.TypeFeishu)] = lark.NewHistory(cs, installSvc, larkClient, slog.Default())
 
 				// Typing indicator: shows a "processing" reaction on the user's
 				// message while the agent is working, then removes it before the
@@ -746,7 +758,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// On-demand history reader behind the unified `multica chat history`
 			// command (MUL-3871): pull the session's Slack conversation when the
 			// agent asks, instead of force-assembling it on every inbound.
-			h.SlackHistory = slack.NewHistory(queries, box.Open, slog.Default())
+			chatHistoryReaders[string(slack.TypeSlack)] = slack.NewHistory(queries, box.Open, slog.Default())
 
 			// `/issue` slash command (MUL-3908): a real Slack slash command,
 			// delivered over the same Socket Mode connection. It is a quick-create
@@ -783,6 +795,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	} else {
 		slog.Info("slack integration disabled (MULTICA_SLACK_SECRET_KEY not set)")
 	}
+
+	// Both integrations have had their chance to register. Nil when neither is
+	// configured, which the handler reads as "no channel integration" rather
+	// than dispatching into an empty map.
+	h.ChatHistory = handler.NewChatHistoryRouter(queries, chatHistoryReaders)
 
 	// DingTalk uses one outbound Stream connection per BYO installation. The
 	// AppSecret is encrypted at rest and the integration is inert unless its

@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/entitlement"
+	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -2700,11 +2701,17 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// the brief inject `multica attachment upload` guidance into a
 		// conversation that cannot carry attachments at all.
 		//
-		// ChatInThread stays Slack-only on purpose. It selects between
-		// `multica chat history` and `multica chat thread`, and those two
-		// endpoints are hardwired to h.SlackHistory (chat_history.go) — there
-		// is no history reader on any other channel, so the flag has nothing
-		// to select between there and must not imply one exists.
+		// ChatInThread selects between `multica chat history` and `multica chat
+		// thread`, so it may only be set for a channel that actually has a
+		// history reader wired (chat_history.go dispatches by channel type).
+		// Slack and Feishu both do; anything else leaves it false rather than
+		// advertising a command that would answer "no channel integration".
+		//
+		// The two platforms decide "in a thread" differently. Slack records the
+		// reply-target ts, and a top-level @mention records its own ts as both,
+		// so the discriminator is last_thread_id != last_message_id. A Lark
+		// topic has its own id (omt_...) that is never a message id, so its
+		// presence alone is the answer.
 		//
 		// chat_type rides along on the same row. It is what lets the
 		// per-turn prompt tell the agent whether this chat_session is a room
@@ -2725,12 +2732,12 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// inference that promises delivery on any deployment
 			// running WeCom without object storage.
 			resp.ChatChannelDeliversFiles = h.channelDeliversFiles(binding.ChannelType)
-			if binding.ChannelType == string(slack.TypeSlack) {
-				// The latest trigger was a thread reply iff its reply-target
-				// thread (last_thread_id) differs from its own message id (a
-				// top-level @mention records its own ts as both).
+			switch binding.ChannelType {
+			case string(slack.TypeSlack):
 				resp.ChatInThread = binding.LastThreadID.Valid && binding.LastThreadID.String != "" &&
 					binding.LastThreadID.String != binding.LastMessageID.String
+			case string(channel.TypeFeishu):
+				resp.ChatInThread = binding.LastThreadID.Valid && binding.LastThreadID.String != ""
 			}
 		}
 		// A web chat can opt into the same durable project context as an

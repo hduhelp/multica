@@ -299,11 +299,11 @@ type Handler struct {
 	DingTalkInstall *dingtalk.InstallService
 	// DingTalkBindingTokens mints and redeems the single-use account-link tokens.
 	DingTalkBindingTokens *dingtalk.BindingTokenService
-	// SlackHistory backs the agent-facing `multica chat history` command: it
-	// reads a chat session's bound Slack conversation on demand (MUL-3871). Nil
-	// unless Slack is configured; GetChatChannelHistory then reports "no channel
-	// integration". A future platform satisfies the same reader interface.
-	SlackHistory ChatChannelHistoryReader
+	// ChatHistory backs the agent-facing `multica chat history` / `chat thread`
+	// commands: it reads a chat session's bound conversation on demand
+	// (MUL-3871), dispatching an on-demand history read to the reader for the
+	// session's own channel type. Nil when no channel integration is wired.
+	ChatHistory ChatChannelHistoryReader
 	// WecomStore is the read/write handle over channel_installation rows scoped
 	// to channel_type='wecom'. Nil disables the wecom Web-UI endpoints (they
 	// return 503) and prevents boot from wiring the smart-bot supervisor.

@@ -61,14 +61,14 @@ func (h *Handler) GetChatChannelHistory(w http.ResponseWriter, r *http.Request) 
 	}
 	var page channel.HistoryPage
 	var err error
-	if h.SlackHistory == nil {
+	if h.ChatHistory == nil {
 		// No Slack integration configured, so the session cannot be Slack-backed:
 		// serve the stored transcript directly. Without this a no-Slack deployment
 		// — the exact one this feature targets — would dead-end on a "no channel
 		// integration" note and never reach the transcript.
 		page, err = h.chatMessageHistory(r, scope)
 	} else {
-		page, err = h.SlackHistory.ChannelOverview(r.Context(), scope.sessionID, scope.historyOptions(r))
+		page, err = h.ChatHistory.ChannelOverview(r.Context(), scope.sessionID, scope.historyOptions(r))
 		if errors.Is(err, slack.ErrNoSlackSession) {
 			// Not Slack-backed: read the session's own stored transcript instead.
 			page, err = h.chatMessageHistory(r, scope)
@@ -204,12 +204,12 @@ func (h *Handler) GetChatThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.SlackHistory == nil {
+	if h.ChatHistory == nil {
 		h.writeNoChannelIntegration(w)
 		return
 	}
 	threadID := r.URL.Query().Get("id")
-	page, err := h.SlackHistory.Thread(r.Context(), scope.sessionID, threadID, scope.historyOptions(r))
+	page, err := h.ChatHistory.Thread(r.Context(), scope.sessionID, threadID, scope.historyOptions(r))
 	h.respondChatHistory(w, r, scope.sessionID, page, err)
 }
 
@@ -294,7 +294,24 @@ func (h *Handler) chatHistorySession(w http.ResponseWriter, r *http.Request) (ch
 // is not channel-backed, a 502 on a real read failure, the page otherwise.
 func (h *Handler) respondChatHistory(w http.ResponseWriter, r *http.Request, sessionID pgtype.UUID, page channel.HistoryPage, err error) {
 	if err != nil {
-		if errors.Is(err, slack.ErrNoSlackSession) {
+		// An actionable failure (today: the connected app is missing a scope)
+		// answers 200 + the reason as the note. Retrying never fixes it, and a
+		// 5xx would make the agent report a transient outage instead of the
+		// real, fixable cause (MUL-4166).
+		var unavailable *channel.HistoryUnavailableError
+		if errors.As(err, &unavailable) {
+			channelType, bindingErr := h.sessionChannelType(r.Context(), sessionID)
+			if bindingErr != nil {
+				channelType = ""
+			}
+			writeJSON(w, http.StatusOK, ChatChannelHistoryResponse{
+				ChannelType: channelType,
+				Messages:    []channel.HistoryMessage{},
+				Note:        unavailable.Reason,
+			})
+			return
+		}
+		if errors.Is(err, slack.ErrNoSlackSession) || errors.Is(err, channel.ErrNoChannelSession) {
 			// One read of the binding, two derived fields. Reading it twice
 			// lets an archive land between them and produce a response whose
 			// channel_type names a platform while its note says there is no
@@ -411,4 +428,64 @@ func (h *Handler) sessionChannelType(ctx context.Context, sessionID pgtype.UUID)
 	default:
 		return "", err
 	}
+}
+
+// chatHistoryBindingQuerier is the one query the dispatcher needs: the session's
+// channel binding, by session id alone, to learn which channel type it is bound
+// to. *db.Queries satisfies it.
+type chatHistoryBindingQuerier interface {
+	GetChannelChatSessionBindingBySessionAny(ctx context.Context, chatSessionID pgtype.UUID) (db.ChannelChatSessionBinding, error)
+}
+
+// chatHistoryRouter dispatches an agent's history read to the reader for the
+// session's channel type. It is the one seam that lets the unified `multica chat`
+// commands serve every platform: it looks up the session's binding (by session
+// alone), then delegates to that channel type's registered reader. A session
+// with no binding, or one bound to a channel with no reader wired, resolves to
+// channel.ErrNoChannelSession, which the handler answers as an empty read + note.
+type chatHistoryRouter struct {
+	q       chatHistoryBindingQuerier
+	readers map[string]ChatChannelHistoryReader
+}
+
+// NewChatHistoryRouter builds the channel-type dispatcher over the per-platform
+// readers (keyed by channel_type: "slack", "feishu"). Returns nil when no reader
+// is registered, so callers can leave Handler.ChatHistory nil ("no channel
+// integration configured") instead of wiring an empty router.
+func NewChatHistoryRouter(q chatHistoryBindingQuerier, readers map[string]ChatChannelHistoryReader) ChatChannelHistoryReader {
+	if len(readers) == 0 {
+		return nil
+	}
+	return &chatHistoryRouter{q: q, readers: readers}
+}
+
+func (rt *chatHistoryRouter) readerFor(ctx context.Context, chatSessionID pgtype.UUID) (ChatChannelHistoryReader, error) {
+	binding, err := rt.q.GetChannelChatSessionBindingBySessionAny(ctx, chatSessionID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, channel.ErrNoChannelSession
+		}
+		return nil, err
+	}
+	reader, ok := rt.readers[binding.ChannelType]
+	if !ok {
+		return nil, channel.ErrNoChannelSession
+	}
+	return reader, nil
+}
+
+func (rt *chatHistoryRouter) ChannelOverview(ctx context.Context, chatSessionID pgtype.UUID, opts channel.HistoryOptions) (channel.HistoryPage, error) {
+	reader, err := rt.readerFor(ctx, chatSessionID)
+	if err != nil {
+		return channel.HistoryPage{}, err
+	}
+	return reader.ChannelOverview(ctx, chatSessionID, opts)
+}
+
+func (rt *chatHistoryRouter) Thread(ctx context.Context, chatSessionID pgtype.UUID, threadID string, opts channel.HistoryOptions) (channel.HistoryPage, error) {
+	reader, err := rt.readerFor(ctx, chatSessionID)
+	if err != nil {
+		return channel.HistoryPage{}, err
+	}
+	return reader.Thread(ctx, chatSessionID, threadID, opts)
 }

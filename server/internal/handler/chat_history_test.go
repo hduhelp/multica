@@ -116,9 +116,9 @@ func taskActorReq(target, taskID string) *http.Request {
 
 func withSlackHistory(t *testing.T, r ChatChannelHistoryReader) {
 	t.Helper()
-	orig := testHandler.SlackHistory
-	testHandler.SlackHistory = r
-	t.Cleanup(func() { testHandler.SlackHistory = orig })
+	orig := testHandler.ChatHistory
+	testHandler.ChatHistory = r
+	t.Cleanup(func() { testHandler.ChatHistory = orig })
 }
 
 func TestGetChatChannelHistory_Success(t *testing.T) {

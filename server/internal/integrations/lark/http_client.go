@@ -1165,6 +1165,20 @@ func isTokenError(code int) bool {
 // is exactly why"), whereas a transport error is ambiguous ("the
 // message may or may not have been delivered") and must NOT trigger a
 // chat-level retry that could duplicate or leak the reply.
+// codeMissingPermission is Lark's "Lack of necessary permissions" code. The
+// response's msg names the exact scope that is missing (e.g. "need scope:
+// im:message.group_msg"), which is what makes this worth distinguishing from a
+// generic failure: it is fixable by an admin, and retrying never helps.
+const codeMissingPermission = 230027
+
+// IsMissingPermission reports whether err is a Lark refusal caused by the
+// connected app lacking a scope. The on-demand history reader turns it into an
+// actionable note rather than a retryable error (MUL-4166).
+func IsMissingPermission(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == codeMissingPermission
+}
+
 type APIError struct {
 	Op   string
 	Code int

@@ -9,6 +9,21 @@ package channel
 // which returns these normalized shapes. Adding a platform is "implement a
 // reader"; the agent-facing contract never changes (MUL-3871).
 
+import "errors"
+
+// HistoryUnavailableError marks a history read that failed for a reason the
+// caller can act on — today, the connected app missing a scope. The unified
+// commands surface Reason as a note with a 200, NOT a retryable 5xx: retrying a
+// permission failure just fails again, and a generic 5xx makes the agent
+// misreport it as a transient platform outage (MUL-4166).
+type HistoryUnavailableError struct {
+	// Reason is the agent-facing, actionable explanation (what is missing and
+	// how to fix it). It is returned verbatim as the response note.
+	Reason string
+}
+
+func (e *HistoryUnavailableError) Error() string { return e.Reason }
+
 // HistoryRole is the normalized author kind of a fetched message, mirroring the
 // chat_message.role domain the agent already reasons about.
 type HistoryRole string
@@ -21,6 +36,13 @@ const (
 	// conversation.
 	HistoryRoleAssistant HistoryRole = "assistant"
 )
+
+// ErrNoChannelSession reports that a chat session has no usable IM-channel
+// binding: either no binding row at all, or one whose channel type has no
+// history reader wired. Readers return it so the handler can answer the read
+// as an empty page with an explanatory note instead of an error — a session
+// that was never bound to a channel is a normal state, not a failure.
+var ErrNoChannelSession = errors.New("channel: session has no channel binding")
 
 // HistoryMessage is one normalized message. It is the same shape regardless of
 // platform so the agent reads a uniform list, like `multica issue comment list
