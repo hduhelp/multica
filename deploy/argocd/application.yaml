@@ -31,6 +31,24 @@ spec:
             enabled: true
         backend:
           replicas: 1
+          # Overrides the chart default of Recreate. Safe here and worth it:
+          # uploads go to S3 so persistence is off and there is no ReadWriteOnce
+          # volume to deadlock on, and Recreate meant the API was down for the
+          # entire image pull — 14 minutes on the 0.5.4 deploy, with the old pod
+          # already killed before anything proved the new image would even pull.
+          # maxUnavailable: 0 keeps the running pod serving until the new one
+          # passes readiness.
+          #
+          # A release carrying a destructive migration must be pinned back to
+          # Recreate for that deploy: the new pod migrates at boot while the old
+          # one is still serving the same database. TestUpMigrationsAreAdditive
+          # in server/cmd/migrate fails on any new one, so this is a decision at
+          # merge time, not something to remember at deploy time.
+          strategy:
+            type: RollingUpdate
+            rollingUpdate:
+              maxUnavailable: 0
+              maxSurge: 1
           uploads:
             persistence:
               enabled: false
