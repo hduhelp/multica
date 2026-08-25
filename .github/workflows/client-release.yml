@@ -110,6 +110,20 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
+      # electron-builder uploads the Desktop installers into this same release
+      # (electron-builder.yml sets releaseType: release) and only finds a
+      # PUBLISHED one. If what exists for the tag is a draft it uploads there
+      # instead — and the job still succeeds, which is how v0.5.0 first ended up
+      # split: a published release holding only the CLI, and a draft holding
+      # everything. Publishing here, in the job the desktop job waits on, leaves
+      # a published release for electron-builder to find. Idempotent, and it
+      # never deletes: whatever GoReleaser just uploaded stays put.
+      - name: Ensure the release is published before Desktop uploads into it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.verify.outputs.tag_name }}
+        run: gh release edit "${TAG}" --draft=false --latest
+
   # Multi-arch images are built natively per platform on dedicated runners
   # (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm) and merged into a
   # manifest list. This avoids QEMU emulation, which was making the Next.js
