@@ -2,7 +2,7 @@
 # The workflow rewrites these two lines, so the published chart pins the exact
 # images it just built. Individual image tags below still override them.
 release:
-  backendVersion: "0.5.3"
+  backendVersion: "0.5.4"
   webVersion: "0.5.0"
 
 # References to registry credentials already created in the target namespace.
