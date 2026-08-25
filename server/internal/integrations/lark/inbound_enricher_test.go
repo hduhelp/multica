@@ -203,11 +203,11 @@ func TestEnrichMergeForward(t *testing.T) {
 
 	out := enrich(t, fake, in, InboundEnricherConfig{})
 
-	want := `<forwarded_messages count="4">
+	want := `<forwarded_messages count="4" message_id="om_forward">
 [User 1]: 你们线上的 Multica 能用吗
 [User 1]: 我这边无法登录
 [User 2]: 我这边 web 和 desktop 都能登陆
-[User 1]: [Image]
+[User 1]: [Image message_id=c4 image_key=img_x]
 </forwarded_messages>`
 	if out.Body != want {
 		t.Errorf("body\n got = %q\nwant = %q", out.Body, want)
@@ -327,7 +327,7 @@ func TestEnrichQuotedMergeForwardNests(t *testing.T) {
 	if !strings.Contains(out.Body, `<quoted_message message_id="om_fwd" sender="User 1" type="merge_forward">`) {
 		t.Errorf("missing quoted wrapper for merge_forward parent: %q", out.Body)
 	}
-	if !strings.Contains(out.Body, "<forwarded_messages count=\"2\">") {
+	if !strings.Contains(out.Body, "<forwarded_messages count=\"2\" message_id=\"om_fwd\">") {
 		t.Errorf("forwarded block should nest inside quoted: %q", out.Body)
 	}
 	if !strings.Contains(out.Body, "line A") || !strings.Contains(out.Body, "line B") {
@@ -349,8 +349,10 @@ func TestEnrichNestedForwardChildIsPlaceholder(t *testing.T) {
 		{MessageID: "c2", MessageType: "merge_forward", SenderID: "ou_a", SenderType: "user", CreateTime: "2000"},
 	}
 	out := enrich(t, fake, InboundMessage{MessageType: "merge_forward", MessageID: "om_f"}, InboundEnricherConfig{})
-	if !strings.Contains(out.Body, "[nested merge_forward, expand manually]") {
-		t.Errorf("nested forward child should be a placeholder: %q", out.Body)
+	// Not recursed into, but carrying its own id: that handle is the only
+	// thing that lets the agent expand the nested forward itself.
+	if !strings.Contains(out.Body, "[forwarded messages message_id=c2]") {
+		t.Errorf("nested forward child should be a keyed placeholder: %q", out.Body)
 	}
 	// Only the top forward should have been fetched.
 	if len(fake.calls) != 1 {

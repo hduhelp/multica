@@ -587,8 +587,10 @@ func TestFeishuMediaResolver_AttachesPostEmbeddedImageMediaRef(t *testing.T) {
 	}
 	got := resolver.ResolveMedia(context.Background(), testMediaInstallation(t), engine.ResolvedIdentity{},
 		uuidFromString(t, "22222222-2222-2222-2222-222222222222"), uuidFromString(t, "33333333-3333-4333-8333-333333333333"), channelMessageFromLark(lm))
-	if got.Text != "[Image]\n识别一下图片" {
-		t.Fatalf("message text = %q, want post placeholder plus text", got.Text)
+	// The post's embedded image keeps its key in the placeholder, so the image
+	// stays reachable from the text even before the media ref is attached.
+	if got.Text != "[Image image_key=img_post_key]\n识别一下图片" {
+		t.Fatalf("message text = %q, want keyed post placeholder plus text", got.Text)
 	}
 	if len(sender.downloadCalls) != 1 {
 		t.Fatalf("download calls = %d, want 1", len(sender.downloadCalls))

@@ -443,8 +443,10 @@ func TestLarkJSONFrameDecoderMediaMessageKeepsPlaceholderAndContent(t *testing.T
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
-	if msg.Body != "[Image]" {
-		t.Errorf("Body = %q; want media placeholder", msg.Body)
+	// The placeholder carries the fetch handle: message id plus resource key.
+	// Content is still kept raw so the media resolver can download the binary.
+	if msg.Body != "[Image message_id=m image_key=img1]" {
+		t.Errorf("Body = %q; want media placeholder with its fetch handle", msg.Body)
 	}
 	if msg.Content != `{"image_key":"img1"}` {
 		t.Errorf("Content = %q; want raw media content", msg.Content)

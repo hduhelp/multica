@@ -442,15 +442,12 @@ func (e *inboundEnricher) renderRecentContextBlock(kept []LarkMessage, names map
 	lines := make([]string, 0, len(kept))
 	for _, m := range kept {
 		label := labeler.label(m)
-		var text string
-		switch {
-		case m.MessageType == larkMsgTypeMergeForward:
-			text = "[merge_forward, expand manually]"
-		default:
-			text = e.flattenMessage(m)
-			if text == "" {
-				text = "[empty message]"
-			}
+		// merge_forward used to be overridden with a bare "expand manually"
+		// note here; the flattener now emits the same marker WITH the message
+		// id, which is the only handle that makes expanding it possible.
+		text := e.flattenMessage(m)
+		if text == "" {
+			text = "[empty message]"
 		}
 		lines = append(lines, fmt.Sprintf("[%s]: %s", label, text))
 	}
@@ -599,7 +596,8 @@ func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID st
 	}
 	total := len(children)
 	if total == 0 {
-		return "<forwarded_messages count=\"0\">\n[no forwarded content available]\n</forwarded_messages>"
+		return fmt.Sprintf("<forwarded_messages count=\"0\"%s>\n[no forwarded content available]\n</forwarded_messages>",
+			forwardIDAttr(forwardID))
 	}
 
 	sort.SliceStable(children, func(i, j int) bool {
@@ -616,15 +614,12 @@ func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID st
 	lines := make([]string, 0, len(children))
 	for _, c := range children {
 		label := labeler.label(c)
-		var text string
-		switch {
-		case c.MessageType == larkMsgTypeMergeForward:
-			text = "[nested merge_forward, expand manually]"
-		default:
-			text = e.flattenMessage(c)
-			if text == "" {
-				text = "[empty message]"
-			}
+		// A nested forward is not recursed into — a grandchild expansion is
+		// another round-trip per level. The flattener emits it with its own
+		// message id, which is what an agent needs to expand it itself.
+		text := e.flattenMessage(c)
+		if text == "" {
+			text = "[empty message]"
 		}
 		lines = append(lines, fmt.Sprintf("[%s]: %s", label, text))
 	}
@@ -632,7 +627,18 @@ func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID st
 	if truncated > 0 {
 		body += fmt.Sprintf("\n... (%d more truncated)", truncated)
 	}
-	return fmt.Sprintf("<forwarded_messages count=\"%d\">\n%s\n</forwarded_messages>", total, body)
+	return fmt.Sprintf("<forwarded_messages count=\"%d\"%s>\n%s\n</forwarded_messages>",
+		total, forwardIDAttr(forwardID), body)
+}
+
+// forwardIDAttr carries the forward container's own message id on the block.
+// It is the handle the agent needs to pull the full set itself — the children
+// here are capped and their media is only referenced, not inlined.
+func forwardIDAttr(forwardID string) string {
+	if forwardID == "" {
+		return ""
+	}
+	return fmt.Sprintf(" message_id=%q", forwardID)
 }
 
 // flattenMessage turns one fetched message into plain text: structural
@@ -652,7 +658,7 @@ func flattenLarkMessage(m LarkMessage) string {
 	if m.Deleted {
 		return "[deleted message]"
 	}
-	raw := flattenContent(m.MessageType, m.Content)
+	raw := flattenContent(m.MessageType, m.Content, m.MessageID)
 	if raw == "" {
 		return ""
 	}

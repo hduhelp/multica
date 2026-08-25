@@ -48,7 +48,7 @@ func TestFlattenPostContent_MediaAndMentionSpans(t *testing.T) {
 		{"tag":"img","image_key":"img_x"},
 		{"tag":"emotion","emoji_type":"SMILE"}
 	]]}`
-	want := "@_user_1 look [Image]"
+	want := "@_user_1 look [Image image_key=img_x]"
 	if got := flattenPostContent(raw); got != want {
 		t.Errorf("got %q want %q", got, want)
 	}
@@ -108,22 +108,27 @@ func TestFlattenContent_DispatchByType(t *testing.T) {
 		want    string
 	}{
 		{"text", "text", `{"text":"hello"}`, "hello"},
-		{"image", "image", `{"image_key":"img_x"}`, "[Image]"},
-		{"file", "file", `{"file_key":"f"}`, "[File]"},
-		{"audio", "audio", `{"file_key":"f"}`, "[Audio]"},
-		{"media", "media", `{"file_key":"f"}`, "[Video]"},
-		{"video", "video", `{"file_key":"f"}`, "[Video]"},
+		// Every non-text placeholder carries what the Lark download endpoint
+		// needs — the owning message id plus the resource key — so an agent
+		// with a Lark CLI can fetch it. A bare "[Image]" stranded it.
+		{"image", "image", `{"image_key":"img_x"}`, "[Image message_id=om_1 image_key=img_x]"},
+		{"file", "file", `{"file_key":"f","file_name":"a b.pdf"}`, `[File message_id=om_1 file_key=f name="a b.pdf"]`},
+		{"audio", "audio", `{"file_key":"f"}`, "[Audio message_id=om_1 file_key=f]"},
+		{"media", "media", `{"file_key":"f"}`, "[Video message_id=om_1 file_key=f]"},
+		{"video", "video", `{"file_key":"f"}`, "[Video message_id=om_1 file_key=f]"},
 		{"sticker", "sticker", `{"file_key":"f"}`, "[Sticker]"},
-		{"interactive", "interactive", `{"title":"t"}`, "[interactive card]"},
-		{"share_chat", "share_chat", `{"chat_id":"oc"}`, "[Shared Chat]"},
-		{"merge_forward", "merge_forward", `{"content":"Merged and Forwarded Message"}`, "[forwarded messages]"},
+		{"interactive", "interactive", `{"title":"t"}`, "[interactive card]\nt"},
+		{"share_chat", "share_chat", `{"chat_id":"oc"}`, "[Shared Chat chat_id=oc]"},
+		// The bundle only comes back from GetMessage(message_id), so the id is
+		// the whole handle.
+		{"merge_forward", "merge_forward", `{"content":"Merged and Forwarded Message"}`, "[forwarded messages message_id=om_1]"},
 		{"unknown", "totally_new_type", `{}`, ""},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := flattenContent(tc.msgType, tc.content); got != tc.want {
+			if got := flattenContent(tc.msgType, tc.content, "om_1"); got != tc.want {
 				t.Errorf("flattenContent(%q) = %q want %q", tc.msgType, got, tc.want)
 			}
 		})

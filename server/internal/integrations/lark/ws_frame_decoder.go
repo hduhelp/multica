@@ -100,10 +100,10 @@ func (d *LarkJSONFrameDecoder) Decode(payload []byte, inst Installation) (Inboun
 	// the binary as a Multica attachment.
 	switch evt.Message.MessageType {
 	case "text", "post":
-		msg.Body = resolveMentions(flattenContent(evt.Message.MessageType, evt.Message.Content),
+		msg.Body = resolveMentions(flattenContent(evt.Message.MessageType, evt.Message.Content, evt.Message.MessageID),
 			evt.Message.Mentions, inst.BotOpenID, botUnionID)
 	case "image", "file", "audio", "media", "video":
-		msg.Body = flattenContent(evt.Message.MessageType, evt.Message.Content)
+		msg.Body = flattenContent(evt.Message.MessageType, evt.Message.Content, evt.Message.MessageID)
 	}
 
 	// Snapshot the user's own text as the command source BEFORE any

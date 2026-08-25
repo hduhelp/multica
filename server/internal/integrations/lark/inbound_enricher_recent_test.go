@@ -524,7 +524,7 @@ func TestEnrichForwardedResolvesNames(t *testing.T) {
 
 	out := enrich(t, fake, in, InboundEnricherConfig{})
 
-	want := `<forwarded_messages count="2">
+	want := `<forwarded_messages count="2" message_id="om_forward">
 [Jiayuan]: 你们线上的 Multica 能用吗
 [Bohan]: 我这边都能登陆
 </forwarded_messages>`
