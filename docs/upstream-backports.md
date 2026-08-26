@@ -18,10 +18,10 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`3c4288dde`** — the fork base itself |
+| **Last surveyed upstream** | **`f8ec870f3`** (2026-08-25) — merged |
 
-> Everything at or below `3c4288dde` is upstream code we already have verbatim.
-> Next survey: `git log 3c4288dde..upstream/main`.
+> Everything at or below `f8ec870f3` is upstream code we already have.
+> Next survey: `git log f8ec870f3..upstream/main`.
 
 ---
 
@@ -80,6 +80,40 @@ re-applied as diffs.
 
 ---
 
+## 2026-08-26 — first post-re-fork sync (`3c4288dde..f8ec870f3`, 20 commits)
+
+Merged, not cherry-picked. The merge base was exactly the fork point, so
+this cost 11 conflicts — 3 of them sqlc output that `make sqlc` regenerates.
+That is the re-fork paying for itself: the same operation against the old
+fork produced 287.
+
+Upstream content: per-agent starter prompts, issue source context, prepaid
+seat capacity, inbox From/unread filters, and a channel refactor moving
+outbound delivery onto a task-level snapshot with `/new` and `/clear`
+conversation controls.
+
+### Divergences this sync recorded
+
+| Area | Decision |
+| --- | --- |
+| Migration numbering | Upstream took 404 and 407-431, colliding with the fixed-repo set this fork had moved to 404-408. Ours renumbered to **432-436** — the prefix lint above 148 requires renumbering, not allowlisting. Safe because all five are idempotent, so they re-run as no-ops and only record new ledger rows. |
+| `larkSessionRouting` | **Kept this fork's root-message keying.** Upstream keys a group conversation on `Source.ThreadID`. This fork's bot opens the topic itself by replying in thread, so at the first @-mention no topic exists and `ThreadID` is empty — topic-id keying would file the opening turn under a different key than every reply inside the topic it creates, and would rekey every live session on deploy. Upstream's new binder test was adapted to this contract. |
+| `ChatInThread` (daemon.go) | Took upstream's delivery-snapshot rewrite wholesale, restored the Feishu branch upstream does not carry. |
+
+### Debt the re-fork replay left, found by this sync's test run
+
+Both pre-dated the merge and are fixed in it: fork UI written off the
+role-named font scale (`text-xs`/`text-sm`/`text-[11px]`), and a
+branding-layer test asserting an `appUrl` derivation the implementation
+never learned — the `api` label is second in `multica.api.hduhelp.com`
+and `deriveAppUrl` only stripped a leading one. Its own comment had
+documented the hduhelp convention; only the code was never updated.
+
+Still failing, untouched, confirmed pre-existing: `pkg/agent` codex
+timeouts and the `ghsnapshot` trailing-refresh flake.
+
+---
+
 ## Change log of this ledger
 
 - 2026-07-24 — Initial ledger. Surveyed `dbb515b7b..139cc8920` (67 commits).
@@ -87,3 +121,5 @@ re-applied as diffs.
 - 2026-08-25 — Re-fork onto `3c4288dde`. Ledger reset: the backport tables it
   carried described a fork point that no longer exists. What this fork carries
   is now the table above, and the next survey starts from the new base.
+- 2026-08-26 — First post-re-fork sync. Merged `3c4288dde..f8ec870f3`
+  (20 commits, 11 conflicts). Fork migrations renumbered 404-408 → 432-436.
