@@ -72,6 +72,7 @@ func (d *LarkJSONFrameDecoder) Decode(payload []byte, inst Installation) (Inboun
 		ChatType:     normalizeChatType(evt.Message.ChatType),
 		MessageID:    evt.Message.MessageID,
 		SenderOpenID: OpenID(evt.Sender.SenderID.OpenID),
+		SenderIsApp:  evt.Sender.SenderType == "app",
 		MessageType:  evt.Message.MessageType,
 		Content:      evt.Message.Content,
 		CreateTime:   evt.Message.CreateTime,

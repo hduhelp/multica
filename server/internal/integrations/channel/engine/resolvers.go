@@ -89,10 +89,24 @@ type ResolvedInstallation struct {
 	Platform        any
 }
 
-// ResolvedIdentity is the sender mapped to a Multica user.
+// ResolvedIdentity is the sender mapped to a Multica actor.
+//
+// UserID is always set: it is the human everything that needs an accountable
+// person is charged to — quota, session ownership, membership, event
+// attribution. AgentID is set ONLY when the sender was another Multica agent's
+// bot, and names who actually acted. The two are not alternatives: an agent
+// still resolves a UserID (its installer), because an agent's consumption is
+// its owner's consumption and the membership gate must still have someone to
+// check. Downstream that records WHO did something — issue creator_type, which
+// has been ('member','agent') since migration 001 — reads AgentID first.
 type ResolvedIdentity struct {
-	UserID pgtype.UUID
+	UserID  pgtype.UUID
+	AgentID pgtype.UUID
 }
+
+// IsAgent reports whether this identity is another Multica agent rather than a
+// person.
+func (r ResolvedIdentity) IsAgent() bool { return r.AgentID.Valid }
 
 // EnsureSessionParams carries the inputs for SessionBinder.EnsureSession.
 // Sender is the resolved session creator (the sole human for p2p, the

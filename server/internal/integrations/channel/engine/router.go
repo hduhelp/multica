@@ -344,6 +344,13 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSenderUnbound):
+			if msg.Source.SenderIsBot {
+				// A bot that is not one of this workspace's agents. It has no
+				// Multica account and never will, so the binding invitation
+				// the branch below sends would be addressed to something that
+				// cannot act on it — noise in someone else's chat forever.
+				return r.drop(ctx, set, msg, inst.ID, DropReasonUnboundUser), finalizeMark, nil
+			}
 			_ = set.Audit.RecordDrop(ctx, inst.ID, msg, DropReasonUnboundUser)
 			return Result{
 				Outcome:        OutcomeNeedsBinding,
@@ -568,7 +575,7 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 			// cannot race an issue agent reading the newly-created issue.
 			assignedRunFireAt = localMediaDeadline.Add(mediaFinalizeTimeout)
 		}
-		issueRes, err := r.createIssue(ctx, inst, set.OriginType, identity.UserID, sessionID, *appendRes.IssueCommand, prefix, assignedRunFireAt)
+		issueRes, err := r.createIssue(ctx, inst, set.OriginType, identity, sessionID, *appendRes.IssueCommand, prefix, assignedRunFireAt)
 		if errors.Is(err, service.ErrActiveDuplicate) && issueRes.DuplicateIssue != nil {
 			duplicate := *issueRes.DuplicateIssue
 			res.IssueID = duplicate.ID
@@ -1048,9 +1055,16 @@ func (r *Router) drop(ctx context.Context, set ResolverSet, msg channel.InboundM
 	return Result{Outcome: OutcomeDropped, DropReason: reason, InstallationID: instID}
 }
 
-func (r *Router) createIssue(ctx context.Context, inst ResolvedInstallation, originType string, creatorUserID, sessionID pgtype.UUID, cmd IssueCommand, issuePrefix string, assignedRunFireAt time.Time) (service.IssueCreateResult, error) {
+func (r *Router) createIssue(ctx context.Context, inst ResolvedInstallation, originType string, creator ResolvedIdentity, sessionID pgtype.UUID, cmd IssueCommand, issuePrefix string, assignedRunFireAt time.Time) (service.IssueCreateResult, error) {
 	if cmd.Title == "" {
 		return service.IssueCreateResult{}, ErrEmptyIssueTitle
+	}
+	// creator_type has been ('member','agent') since migration 001, so an
+	// agent-initiated issue records the agent that asked for it rather than
+	// crediting the human who happens to own that agent's installation.
+	creatorType, creatorID := "member", creator.UserID
+	if creator.IsAgent() {
+		creatorType, creatorID = "agent", creator.AgentID
 	}
 	params := service.IssueCreateParams{
 		WorkspaceID:  inst.WorkspaceID,
@@ -1060,8 +1074,8 @@ func (r *Router) createIssue(ctx context.Context, inst ResolvedInstallation, ori
 		Priority:     "none",
 		AssigneeType: pgtype.Text{String: "agent", Valid: true},
 		AssigneeID:   inst.AgentID,
-		CreatorType:  "member",
-		CreatorID:    creatorUserID,
+		CreatorType:  creatorType,
+		CreatorID:    creatorID,
 		OriginType:   pgtype.Text{String: originType, Valid: originType != ""},
 		OriginID:     sessionID,
 	}

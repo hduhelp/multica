@@ -1411,6 +1411,51 @@ func (q *Queries) GetChannelInstallationByAppID(ctx context.Context, arg GetChan
 	return i, err
 }
 
+const getChannelInstallationByBotOpenID = `-- name: GetChannelInstallationByBotOpenID :one
+SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
+WHERE workspace_id = $1
+  AND channel_type = $2
+  AND config ->> 'bot_open_id' = $3::text
+  AND status = 'active'
+`
+
+type GetChannelInstallationByBotOpenIDParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ChannelType string      `json:"channel_type"`
+	BotOpenID   string      `json:"bot_open_id"`
+}
+
+// Identifies the Multica agent behind an inbound sender that is itself a bot.
+// An agent's bot open_id is stored on its own installation, so when one agent
+// @-mentions another the sender id resolves to a real first-class actor rather
+// than an unbound stranger. Scoped to the workspace so a bot from another
+// workspace can never resolve to an initiator here.
+//
+// bot_open_id is pinned ::text for the same reason app_id is in
+// GetChannelInstallationByAppID: a bare param would be attributed to the JSONB
+// config column. Unindexed on purpose — a workspace has a handful of
+// installations, so this is a scan of a few rows on a path that only runs for
+// senders with no user binding.
+func (q *Queries) GetChannelInstallationByBotOpenID(ctx context.Context, arg GetChannelInstallationByBotOpenIDParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, getChannelInstallationByBotOpenID, arg.WorkspaceID, arg.ChannelType, arg.BotOpenID)
+	var i ChannelInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
+		&i.Status,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getChannelInstallationInWorkspace = `-- name: GetChannelInstallationInWorkspace :one
 SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
 WHERE id = $1

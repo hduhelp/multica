@@ -75,6 +75,14 @@ type Source struct {
 	// means a top-level conversation message. The core persists it so a
 	// decoupled outbound reply can be threaded back into the same topic.
 	ThreadID string
+
+	// SenderIsBot reports that the platform attributes this message to an
+	// application rather than a person (Lark sender_type "app", …). It
+	// changes what an unresolvable sender MEANS: a person who is not bound
+	// yet should be invited to bind, while a bot has no account to bind and
+	// must simply be ignored. Adapters that cannot tell leave it false, which
+	// preserves the person-shaped handling they had before.
+	SenderIsBot bool
 }
 
 // MediaRef references a media attachment that the adapter has ALREADY

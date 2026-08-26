@@ -101,10 +101,16 @@ func (r *feishuIdentityResolver) ResolveSender(ctx context.Context, inst engine.
 		ChannelUserID:  msg.Source.SenderID,
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return engine.ResolvedIdentity{}, err
 		}
-		return engine.ResolvedIdentity{}, err
+		// No user binding. Before calling this an unbound stranger, check
+		// whether the sender is another Multica agent's bot: an agent's
+		// open_id lives on its own installation, so one agent @-mentioning
+		// another resolves to a first-class actor instead of a dead end. A bot
+		// has no account to bind, so without this the only outcome available
+		// was to invite it to bind — which it cannot do, ever.
+		return r.resolveAgentSender(ctx, inst, msg)
 	}
 	isMember, err := r.store.IsWorkspaceMember(ctx, inst.WorkspaceID, binding.MulticaUserID)
 	if err != nil {
@@ -114,6 +120,40 @@ func (r *feishuIdentityResolver) ResolveSender(ctx context.Context, inst engine.
 		return engine.ResolvedIdentity{}, engine.ErrSenderNotMember
 	}
 	return engine.ResolvedIdentity{UserID: binding.MulticaUserID}, nil
+}
+
+// resolveAgentSender maps a bot sender to the Multica agent behind it. It runs
+// only after the user-binding lookup missed.
+//
+// The installer stands in as UserID for everything that needs an accountable
+// person, and is membership-checked like any other sender — so an agent whose
+// installer has left the workspace stops being able to initiate, which is the
+// same rule that applies to the human.
+func (r *feishuIdentityResolver) resolveAgentSender(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (engine.ResolvedIdentity, error) {
+	src, err := r.store.GetLarkInstallationByBotOpenID(ctx, inst.WorkspaceID, msg.Source.SenderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Not one of ours — a third-party bot, or a person who has not
+			// bound yet. The Router tells those apart by Source.SenderIsBot.
+			return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+		}
+		return engine.ResolvedIdentity{}, err
+	}
+	if src.AgentID == inst.AgentID {
+		// The agent's own bot. Lark does not echo an app's messages back to
+		// itself, so this is only reachable if an installation is ever routed
+		// twice; refusing keeps a self-trigger impossible by construction
+		// rather than by platform behaviour.
+		return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+	}
+	isMember, err := r.store.IsWorkspaceMember(ctx, inst.WorkspaceID, src.InstallerUserID)
+	if err != nil {
+		return engine.ResolvedIdentity{}, err
+	}
+	if !isMember {
+		return engine.ResolvedIdentity{}, engine.ErrSenderNotMember
+	}
+	return engine.ResolvedIdentity{UserID: src.InstallerUserID, AgentID: src.AgentID}, nil
 }
 
 // ---- dedup ----

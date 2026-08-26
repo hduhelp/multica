@@ -145,6 +145,7 @@ func channelMessageFromLark(lm InboundMessage) channel.InboundMessage {
 			ChatID:      string(lm.ChatID),
 			ChatType:    channel.ChatType(string(lm.ChatType)),
 			SenderID:    string(lm.SenderOpenID),
+			SenderIsBot: lm.SenderIsApp,
 			ThreadID:    lm.ThreadID,
 		},
 		Raw: raw,

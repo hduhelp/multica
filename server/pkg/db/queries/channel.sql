@@ -1213,3 +1213,21 @@ SELECT
     count(*) FILTER (WHERE state <> 'tombstoned') AS pending_objects,
     count(*) FILTER (WHERE state = 'tombstoned') AS tombstoned_objects
 FROM channel_media_pending_object;
+
+-- name: GetChannelInstallationByBotOpenID :one
+-- Identifies the Multica agent behind an inbound sender that is itself a bot.
+-- An agent's bot open_id is stored on its own installation, so when one agent
+-- @-mentions another the sender id resolves to a real first-class actor rather
+-- than an unbound stranger. Scoped to the workspace so a bot from another
+-- workspace can never resolve to an initiator here.
+--
+-- bot_open_id is pinned ::text for the same reason app_id is in
+-- GetChannelInstallationByAppID: a bare param would be attributed to the JSONB
+-- config column. Unindexed on purpose — a workspace has a handful of
+-- installations, so this is a scan of a few rows on a path that only runs for
+-- senders with no user binding.
+SELECT * FROM channel_installation
+WHERE workspace_id = sqlc.arg('workspace_id')
+  AND channel_type = sqlc.arg('channel_type')
+  AND config ->> 'bot_open_id' = sqlc.arg('bot_open_id')::text
+  AND status = 'active';

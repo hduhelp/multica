@@ -76,6 +76,21 @@ func (s *ChannelStore) GetLarkInstallationByAppID(ctx context.Context, appID str
 	return installationFromRow(row)
 }
 
+// GetLarkInstallationByBotOpenID finds the installation whose bot is the given
+// open_id — i.e. the Multica agent that sent an inbound message, when the
+// sender is another agent's bot rather than a person.
+func (s *ChannelStore) GetLarkInstallationByBotOpenID(ctx context.Context, workspaceID pgtype.UUID, botOpenID string) (Installation, error) {
+	row, err := s.Queries.GetChannelInstallationByBotOpenID(ctx, db.GetChannelInstallationByBotOpenIDParams{
+		WorkspaceID: workspaceID,
+		ChannelType: channelTypeFeishu,
+		BotOpenID:   botOpenID,
+	})
+	if err != nil {
+		return Installation{}, err
+	}
+	return installationFromRow(row)
+}
+
 func (s *ChannelStore) GetLarkInstallation(ctx context.Context, id pgtype.UUID) (Installation, error) {
 	row, err := s.Queries.GetChannelInstallation(ctx, db.GetChannelInstallationParams{
 		ID:          id,
