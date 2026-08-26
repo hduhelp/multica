@@ -103,6 +103,17 @@ type APIClient interface {
 	// adapter: flattening and block assembly are the enricher's job.
 	ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error)
 
+	// ListChatBots lists the bots in a chat via
+	// GET /open-apis/im/v1/chats/{chat_id}/members?member_id_type=open_id&member_type=bot.
+	//
+	// It exists because a Lark open_id is scoped to the app that observes
+	// it: the same bot is a different open_id to every app that can see it,
+	// so an inbound sender id cannot be compared against the bot_open_id an
+	// installation stored for itself. This endpoint is the one place Lark
+	// hands back an app_id next to the open_id, and app_id IS comparable —
+	// it is the key installations are already routed on.
+	ListChatBots(ctx context.Context, creds InstallationCredentials, chatID ChatID) ([]ChatBotMember, error)
+
 	// DownloadMessageResource downloads one binary resource attached to a
 	// message via GET /open-apis/im/v1/messages/{message_id}/resources/{file_key}.
 	// Type is the Open Platform resource class ("image" for image_key,
@@ -426,6 +437,11 @@ func (s *stubAPIClient) ListChatMessages(ctx context.Context, creds Installation
 	return nil, ErrAPIClientNotConfigured
 }
 
+func (s *stubAPIClient) ListChatBots(ctx context.Context, creds InstallationCredentials, chatID ChatID) ([]ChatBotMember, error) {
+	s.log.Warn("lark stub client: ListChatBots called", "chat_id", string(chatID))
+	return nil, ErrAPIClientNotConfigured
+}
+
 func (s *stubAPIClient) DownloadMessageResource(ctx context.Context, creds InstallationCredentials, p DownloadResourceParams) (DownloadedResource, error) {
 	s.log.Warn("lark stub client: DownloadMessageResource called", "message_id", p.MessageID)
 	return DownloadedResource{}, ErrAPIClientNotConfigured
@@ -444,4 +460,13 @@ func (s *stubAPIClient) AddMessageReaction(ctx context.Context, p AddReactionPar
 func (s *stubAPIClient) DeleteMessageReaction(ctx context.Context, p DeleteReactionParams) error {
 	s.log.Warn("lark stub client: DeleteMessageReaction called", "message_id", p.MessageID, "reaction_id", p.ReactionID)
 	return ErrAPIClientNotConfigured
+}
+
+// ChatBotMember is one bot in a chat's member list. app_id is the reason this
+// type exists: it is the only cross-app-stable identifier Lark returns for a
+// bot, so it is what lets one installation recognize another's bot.
+type ChatBotMember struct {
+	AppID  string
+	OpenID string
+	Name   string
 }

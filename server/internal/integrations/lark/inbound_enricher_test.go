@@ -52,6 +52,10 @@ func (f *enricherFakeClient) GetMessage(ctx context.Context, creds InstallationC
 	}
 	return f.byID[id], nil
 }
+func (f *enricherFakeClient) ListChatBots(context.Context, InstallationCredentials, ChatID) ([]ChatBotMember, error) {
+	return nil, nil
+}
+
 func (f *enricherFakeClient) ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error) {
 	f.listCalls = append(f.listCalls, p.ChatID)
 	f.listParams = append(f.listParams, p)

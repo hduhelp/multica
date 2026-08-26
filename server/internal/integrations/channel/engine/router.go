@@ -248,11 +248,19 @@ func (r *Router) Handle(ctx context.Context, msg channel.InboundMessage) error {
 		)
 		return err
 	}
+	// sender_id / sender_is_bot / addressed are here because without them a
+	// drop is undiagnosable: "not_addressed_in_group" and "unbound_user" each
+	// have several very different causes, and the only way to tell them apart
+	// was to correlate timestamps against the platform's own message history.
 	r.logger.Debug("channel router: dispatch outcome",
 		"channel_type", string(msg.Source.ChannelType),
 		"event_id", msg.EventID,
 		"outcome", string(res.Outcome),
 		"drop_reason", string(res.DropReason),
+		"chat_type", string(msg.Source.ChatType),
+		"sender_id", msg.Source.SenderID,
+		"sender_is_bot", msg.Source.SenderIsBot,
+		"addressed", msg.AddressedToBot,
 	)
 
 	// Typing indicator on ingest, detached so the reaction HTTP call never
@@ -343,6 +351,11 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 	identity, err := set.Identity.ResolveSender(ctx, inst, msg)
 	if err != nil {
 		switch {
+		case errors.Is(err, ErrSenderIsBot):
+			// Authoritative: the adapter looked the sender up and it is an
+			// application. This does not rely on the platform's sender_type,
+			// which is the reason the SenderIsBot hint below is a hint.
+			return r.drop(ctx, set, msg, inst.ID, DropReasonUnboundUser), finalizeMark, nil
 		case errors.Is(err, ErrSenderUnbound):
 			if msg.Source.SenderIsBot {
 				// A bot that is not one of this workspace's agents. It has no

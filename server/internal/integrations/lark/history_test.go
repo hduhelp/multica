@@ -49,6 +49,10 @@ func newHistoryFakeClient() *historyFakeClient {
 	return &historyFakeClient{APIClient: NewStubAPIClient(nil)}
 }
 
+func (f *historyFakeClient) ListChatBots(context.Context, InstallationCredentials, ChatID) ([]ChatBotMember, error) {
+	return nil, nil
+}
+
 func (f *historyFakeClient) ListChatMessages(_ context.Context, _ InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error) {
 	f.calls = append(f.calls, p)
 	if f.listErr != nil {

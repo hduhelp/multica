@@ -87,6 +87,10 @@ func (s *stubAPIClientWithRecorder) GetBotInfo(ctx context.Context, creds Instal
 func (s *stubAPIClientWithRecorder) GetMessage(ctx context.Context, creds InstallationCredentials, messageID string) ([]LarkMessage, error) {
 	return nil, nil
 }
+func (s *stubAPIClientWithRecorder) ListChatBots(context.Context, InstallationCredentials, ChatID) ([]ChatBotMember, error) {
+	return nil, nil
+}
+
 func (s *stubAPIClientWithRecorder) ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error) {
 	return nil, nil
 }

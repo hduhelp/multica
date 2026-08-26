@@ -44,10 +44,10 @@ func larkMsgFromRaw(msg channel.InboundMessage) (InboundMessage, error) {
 // shared session service, audit logger, and (optional) outbound replier +
 // typing indicator. Feishu is just another consumer of the channel-agnostic
 // engine.ChatSession — there is no Feishu-specific session implementation.
-func NewFeishuResolverSet(store *ChannelStore, session *engine.ChatSession, audit AuditLogger, replier OutcomeReplier, typing *TypingIndicatorManager, media engine.MediaResolver) engine.ResolverSet {
+func NewFeishuResolverSet(store *ChannelStore, session *engine.ChatSession, audit AuditLogger, replier OutcomeReplier, typing *TypingIndicatorManager, media engine.MediaResolver, api APIClient, creds CredentialsResolver) engine.ResolverSet {
 	set := engine.ResolverSet{
 		Installation: &feishuInstallationResolver{store: store},
-		Identity:     &feishuIdentityResolver{store: store},
+		Identity:     &feishuIdentityResolver{store: store, api: api, creds: creds},
 		Dedup:        &feishuDeduper{store: store},
 		Session:      &feishuSessionBinder{session: session},
 		Audit:        &feishuAuditor{audit: audit},
@@ -93,7 +93,14 @@ func (r *feishuInstallationResolver) ResolveInstallation(ctx context.Context, ms
 
 // ---- identity ----
 
-type feishuIdentityResolver struct{ store *ChannelStore }
+type feishuIdentityResolver struct {
+	store *ChannelStore
+	// api + creds are used only to recognize a bot sender; both may be nil on
+	// a deployment without a wired Lark app, and the resolver degrades to the
+	// person-only behaviour it had before.
+	api   APIClient
+	creds CredentialsResolver
+}
 
 func (r *feishuIdentityResolver) ResolveSender(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (engine.ResolvedIdentity, error) {
 	binding, err := r.store.GetLarkUserBindingByOpenID(ctx, GetUserBindingByOpenIDParams{
@@ -122,6 +129,43 @@ func (r *feishuIdentityResolver) ResolveSender(ctx context.Context, inst engine.
 	return engine.ResolvedIdentity{UserID: binding.MulticaUserID}, nil
 }
 
+// senderBotAppID reports the app_id of the sender when the sender is a bot in
+// this chat.
+//
+// It goes through the chat's member list rather than comparing open_ids
+// because a Lark open_id is scoped to the app that observes it: the same bot
+// is a different open_id to every app that can see it, so the bot_open_id an
+// installation stored for itself never matches what a SIBLING installation
+// receives as the sender. The member list is the one place Lark returns an
+// app_id next to the open_id, and app_id is the same string for everyone.
+//
+// A failure here is reported as "not a bot", which lands the sender back on
+// the ordinary unbound-person path — the behaviour that predates agent
+// senders.
+func (r *feishuIdentityResolver) senderBotAppID(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (string, bool) {
+	if r.api == nil || !r.api.IsConfigured() || msg.Source.ChatID == "" {
+		return "", false
+	}
+	self, err := r.store.GetLarkInstallation(ctx, inst.ID)
+	if err != nil {
+		return "", false
+	}
+	creds, err := installationCredentialsFor(self, r.creds)
+	if err != nil {
+		return "", false
+	}
+	bots, err := r.api.ListChatBots(ctx, creds, ChatID(msg.Source.ChatID))
+	if err != nil {
+		return "", false
+	}
+	for _, b := range bots {
+		if b.OpenID == msg.Source.SenderID {
+			return b.AppID, true
+		}
+	}
+	return "", false
+}
+
 // resolveAgentSender maps a bot sender to the Multica agent behind it. It runs
 // only after the user-binding lookup missed.
 //
@@ -130,14 +174,24 @@ func (r *feishuIdentityResolver) ResolveSender(ctx context.Context, inst engine.
 // installer has left the workspace stops being able to initiate, which is the
 // same rule that applies to the human.
 func (r *feishuIdentityResolver) resolveAgentSender(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (engine.ResolvedIdentity, error) {
-	src, err := r.store.GetLarkInstallationByBotOpenID(ctx, inst.WorkspaceID, msg.Source.SenderID)
+	appID, ok := r.senderBotAppID(ctx, inst, msg)
+	if !ok {
+		// Not a bot in this chat: an ordinary person who has not bound yet.
+		return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+	}
+	src, err := r.store.GetLarkInstallationByAppID(ctx, appID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Not one of ours — a third-party bot, or a person who has not
-			// bound yet. The Router tells those apart by Source.SenderIsBot.
-			return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+			// A bot, but not one of this deployment's agents.
+			return engine.ResolvedIdentity{}, engine.ErrSenderIsBot
 		}
 		return engine.ResolvedIdentity{}, err
+	}
+	if src.WorkspaceID != inst.WorkspaceID {
+		// Another workspace's agent sharing the chat. It is a bot, so it gets
+		// the bot treatment rather than a binding invitation, but it is not an
+		// initiator here.
+		return engine.ResolvedIdentity{}, engine.ErrSenderIsBot
 	}
 	if src.AgentID == inst.AgentID {
 		// The agent's own bot. Lark does not echo an app's messages back to

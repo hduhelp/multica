@@ -256,6 +256,12 @@ var (
 	// ErrSenderNotMember: the sender is bound but not a workspace member →
 	// non_workspace_member drop.
 	ErrSenderNotMember = errors.New("engine: sender not a workspace member")
+	// ErrSenderIsBot: the sender is definitely an application, and not one of
+	// this workspace's agents. Distinct from ErrSenderUnbound because the
+	// right response differs — a person who has not bound yet is invited to,
+	// a bot is ignored. The invitation is a card posted into a live
+	// conversation and nothing on the other side can ever accept it.
+	ErrSenderIsBot = errors.New("engine: sender is a bot with no agent")
 	// ErrRouteChanged asks the Router to resolve the platform route again and
 	// retry the same claimed message before any durable write is made.
 	ErrRouteChanged = errors.New("engine: route changed")

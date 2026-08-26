@@ -54,6 +54,10 @@ func (f *fakeTypingAPIClient) GetBotInfo(context.Context, InstallationCredential
 func (f *fakeTypingAPIClient) GetMessage(context.Context, InstallationCredentials, string) ([]LarkMessage, error) {
 	return nil, nil
 }
+func (f *fakeTypingAPIClient) ListChatBots(context.Context, InstallationCredentials, ChatID) ([]ChatBotMember, error) {
+	return nil, nil
+}
+
 func (f *fakeTypingAPIClient) ListChatMessages(context.Context, InstallationCredentials, ListMessagesParams) ([]LarkMessage, error) {
 	return nil, nil
 }

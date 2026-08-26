@@ -13,13 +13,32 @@ import (
 // A bot has no Multica account and never will, so inviting it to bind is an
 // invitation nothing can accept — and the invitation is a card posted into a
 // real conversation, so it is not a harmless no-op. An unresolvable PERSON
-// still gets the invitation; that is the whole distinction SenderIsBot draws.
+// still gets the invitation; that is the whole distinction being drawn.
+//
+// Both routes to that verdict are covered: ErrSenderIsBot, which the adapter
+// returns after looking the sender up and finding it in the chat's bot roster,
+// and the Source.SenderIsBot hint from the platform's own sender_type. The
+// first is authoritative — production has shown the second arriving false on a
+// message the platform's history API reports as app-sent.
 func TestRouter_UnresolvedBotSender_DropsInsteadOfInviting(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		isBot bool
+	}{
+		{name: "adapter identified a bot", err: ErrSenderIsBot},
+		{name: "platform sender_type hint", err: ErrSenderUnbound, isBot: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) { assertBotIsNotInvited(t, tc.err, tc.isBot) })
+	}
+}
+
+func assertBotIsNotInvited(t *testing.T, resolveErr error, isBot bool) {
 	h := newHarness(t)
-	h.ident.err = ErrSenderUnbound
+	h.ident.err = resolveErr
 
 	msg := p2pMessage(t)
-	msg.Source.SenderIsBot = true
+	msg.Source.SenderIsBot = isBot
 	msg.Source.SenderID = "ou_some_other_bot"
 
 	if err := h.router.Handle(context.Background(), msg); err != nil {

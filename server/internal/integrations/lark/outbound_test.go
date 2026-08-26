@@ -169,6 +169,10 @@ func (f *fakeAPIClient) GetBotInfo(ctx context.Context, creds InstallationCreden
 func (f *fakeAPIClient) GetMessage(ctx context.Context, creds InstallationCredentials, messageID string) ([]LarkMessage, error) {
 	return nil, nil
 }
+func (f *fakeAPIClient) ListChatBots(context.Context, InstallationCredentials, ChatID) ([]ChatBotMember, error) {
+	return nil, nil
+}
+
 func (f *fakeAPIClient) ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error) {
 	return nil, nil
 }
