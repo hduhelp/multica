@@ -471,20 +471,20 @@ function FixedRepoSettings({
                   ($) => $.inspector.fixed_repo_paths_placeholder,
                 )}
                 aria-label={t(($) => $.inspector.prop_fixed_repo_paths)}
-                className="font-mono text-xs"
+                className="font-mono text-caption"
               />
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p className="mt-1 text-caption text-muted-foreground">
                 {t(($) => $.inspector.fixed_repo_paths_hint, {
                   max: MAX_FIXED_REPO_PATHS,
                 })}
               </p>
               {parsedCount === 0 && (
-                <p className="mt-1 text-xs text-destructive">
+                <p className="mt-1 text-caption text-destructive">
                   {t(($) => $.inspector.fixed_repo_paths_required)}
                 </p>
               )}
               {parsedCount > MAX_FIXED_REPO_PATHS && (
-                <p className="mt-1 text-xs text-destructive">
+                <p className="mt-1 text-caption text-destructive">
                   {t(($) => $.inspector.fixed_repo_paths_limit, {
                     max: MAX_FIXED_REPO_PATHS,
                   })}
@@ -537,7 +537,7 @@ function FixedRepoSettings({
                   }
                   aria-label={t(($) => $.inspector.prop_fixed_repo_worktree)}
                 />
-                <p className="mt-1 text-xs text-muted-foreground">
+                <p className="mt-1 text-caption text-muted-foreground">
                   {t(($) => $.inspector.fixed_repo_worktree_hint)}
                 </p>
               </div>
@@ -559,9 +559,9 @@ function FixedRepoSettings({
                   ($) => $.inspector.fixed_repo_cleanup_placeholder,
                 )}
                 aria-label={t(($) => $.inspector.prop_fixed_repo_cleanup)}
-                className="font-mono text-xs"
+                className="font-mono text-caption"
               />
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p className="mt-1 text-caption text-muted-foreground">
                 {t(($) => $.inspector.fixed_repo_cleanup_hint)}
               </p>
             </div>

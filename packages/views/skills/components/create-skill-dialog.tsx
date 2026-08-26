@@ -445,14 +445,14 @@ function UrlForm({
         {candidates.length > 0 && (
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <p className="text-xs text-muted-foreground">
+              <p className="text-caption text-muted-foreground">
                 {t(($) => $.create.url.directory_hint, {
                   count: candidates.length,
                 })}
               </p>
               <button
                 type="button"
-                className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                className="text-caption text-muted-foreground underline-offset-2 hover:underline"
                 onClick={() =>
                   setSelected(
                     selected.size === candidates.length
@@ -476,7 +476,7 @@ function UrlForm({
                     checked={selected.has(c.url)}
                     onCheckedChange={() => toggleCandidate(c.url)}
                   />
-                  <span className="font-mono text-xs">{c.name}</span>
+                  <span className="font-mono text-caption">{c.name}</span>
                 </label>
               ))}
             </div>

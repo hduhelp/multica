@@ -112,10 +112,10 @@ export function DaemonControlSection({
     <div className="space-y-3 border-t pt-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-medium">
+          <p className="text-body font-medium">
             {t(($) => $.daemon_control.title)}
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-caption text-muted-foreground">
             {t(($) => $.daemon_control.subtitle)}
           </p>
         </div>
@@ -174,7 +174,7 @@ export function DaemonControlSection({
       </div>
 
       {isManaged && (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-caption text-muted-foreground">
           {t(($) => $.daemon_control.desktop_managed)}
         </p>
       )}
@@ -182,7 +182,7 @@ export function DaemonControlSection({
       {logs !== null && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">
+            <span className="text-caption font-medium text-muted-foreground">
               {t(($) => $.daemon_control.logs_title)}
             </span>
             <button
@@ -197,7 +197,7 @@ export function DaemonControlSection({
               />
             </button>
           </div>
-          <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 text-[11px] leading-relaxed font-mono">
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 text-micro leading-relaxed font-mono">
             {logs}
           </pre>
         </div>

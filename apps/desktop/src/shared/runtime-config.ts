@@ -104,8 +104,17 @@ export function deriveAppUrl(apiUrl: string): string {
   url.pathname = "";
   url.search = "";
   url.hash = "";
-  if (url.hostname.startsWith("api.") && url.hostname.split(".").length >= 3) {
-    url.hostname = url.hostname.slice("api.".length);
+  // The `api` label is leading upstream (api.multica.ai) and second in this
+  // deployment (multica.api.hduhelp.com), so accept it in either position.
+  // Requiring three labels keeps a short host like `api.local` untouched, the
+  // same conservatism the leading-only form had.
+  const labels = url.hostname.split(".");
+  if (labels.length >= 3) {
+    const at = labels.indexOf("api");
+    if (at === 0 || at === 1) {
+      labels.splice(at, 1);
+      url.hostname = labels.join(".");
+    }
   }
   return trimTrailingSlash(url.toString());
 }
