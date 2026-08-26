@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -47,7 +48,7 @@ func larkMsgFromRaw(msg channel.InboundMessage) (InboundMessage, error) {
 func NewFeishuResolverSet(store *ChannelStore, session *engine.ChatSession, audit AuditLogger, replier OutcomeReplier, typing *TypingIndicatorManager, media engine.MediaResolver, api APIClient, creds CredentialsResolver) engine.ResolverSet {
 	set := engine.ResolverSet{
 		Installation: &feishuInstallationResolver{store: store},
-		Identity:     &feishuIdentityResolver{store: store, api: api, creds: creds},
+		Identity:     &feishuIdentityResolver{store: store, api: api, creds: creds, logger: slog.Default()},
 		Dedup:        &feishuDeduper{store: store},
 		Session:      &feishuSessionBinder{session: session},
 		Audit:        &feishuAuditor{audit: audit},
@@ -98,8 +99,9 @@ type feishuIdentityResolver struct {
 	// api + creds are used only to recognize a bot sender; both may be nil on
 	// a deployment without a wired Lark app, and the resolver degrades to the
 	// person-only behaviour it had before.
-	api   APIClient
-	creds CredentialsResolver
+	api    APIClient
+	creds  CredentialsResolver
+	logger *slog.Logger
 }
 
 func (r *feishuIdentityResolver) ResolveSender(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (engine.ResolvedIdentity, error) {
@@ -129,41 +131,94 @@ func (r *feishuIdentityResolver) ResolveSender(ctx context.Context, inst engine.
 	return engine.ResolvedIdentity{UserID: binding.MulticaUserID}, nil
 }
 
-// senderBotAppID reports the app_id of the sender when the sender is a bot in
-// this chat.
+// senderBotName returns the sender's bot display name when the sender is a bot
+// in this chat, reading it from the chat's own bot roster.
 //
-// It goes through the chat's member list rather than comparing open_ids
-// because a Lark open_id is scoped to the app that observes it: the same bot
-// is a different open_id to every app that can see it, so the bot_open_id an
-// installation stored for itself never matches what a SIBLING installation
-// receives as the sender. The member list is the one place Lark returns an
-// app_id next to the open_id, and app_id is the same string for everyone.
+// The roster is used instead of comparing open_ids because a Lark open_id is
+// scoped to the app that observes it: the same bot is a different open_id to
+// every app that can see it, so the bot_open_id an installation stored for
+// itself never equals what a SIBLING installation receives as the sender.
+// Lark's bot roster returns only bot_id + bot_name — there is no app_id and no
+// cross-app id anywhere in this API surface — so the name is the join key, and
+// installationForBotName grounds the other side of that join in the same
+// roster so both names come from one source at one moment.
 //
-// A failure here is reported as "not a bot", which lands the sender back on
-// the ordinary unbound-person path — the behaviour that predates agent
-// senders.
-func (r *feishuIdentityResolver) senderBotAppID(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (string, bool) {
-	if r.api == nil || !r.api.IsConfigured() || msg.Source.ChatID == "" {
-		return "", false
-	}
-	self, err := r.store.GetLarkInstallation(ctx, inst.ID)
+// A failure is reported as "not a bot", which lands the sender back on the
+// ordinary unbound-person path. It is logged, because a silent fallback here
+// is indistinguishable from a sender that really is a person.
+func (r *feishuIdentityResolver) senderBotName(ctx context.Context, self Installation, chatID string, senderID string) (string, bool) {
+	bots, err := r.chatBots(ctx, self, chatID)
 	if err != nil {
-		return "", false
-	}
-	creds, err := installationCredentialsFor(self, r.creds)
-	if err != nil {
-		return "", false
-	}
-	bots, err := r.api.ListChatBots(ctx, creds, ChatID(msg.Source.ChatID))
-	if err != nil {
+		r.log().Warn("lark identity: chat bot roster unavailable; treating sender as a person",
+			"installation_id", uuidString(self.ID), "chat_id", chatID, "err", err)
 		return "", false
 	}
 	for _, b := range bots {
-		if b.OpenID == msg.Source.SenderID {
-			return b.AppID, true
+		if b.OpenID == senderID {
+			return b.Name, true
 		}
 	}
 	return "", false
+}
+
+// installationForBotName finds which of this workspace's installations owns the
+// named bot. Each candidate reads the SAME chat roster through its own
+// credentials and locates itself by the bot_open_id it stored — an id that is
+// correct in exactly that app's namespace — so the name it compares is its own,
+// verified, and fetched at the same moment as the sender's.
+func (r *feishuIdentityResolver) installationForBotName(ctx context.Context, self Installation, chatID, botName string) (Installation, bool) {
+	if botName == "" {
+		return Installation{}, false
+	}
+	peers, err := r.store.ListLarkInstallationsByWorkspace(ctx, self.WorkspaceID)
+	if err != nil {
+		r.log().Warn("lark identity: could not list workspace installations",
+			"workspace_id", uuidString(self.WorkspaceID), "err", err)
+		return Installation{}, false
+	}
+	var found Installation
+	matches := 0
+	for _, peer := range peers {
+		if peer.ID == self.ID || peer.Status != "active" {
+			continue
+		}
+		bots, err := r.chatBots(ctx, peer, chatID)
+		if err != nil {
+			continue
+		}
+		for _, b := range bots {
+			if b.OpenID == peer.BotOpenID && b.Name == botName {
+				found, matches = peer, matches+1
+				break
+			}
+		}
+	}
+	if matches != 1 {
+		// Zero: the bot belongs to no agent of ours. More than one: two of our
+		// agents share a display name, and guessing which one acted would put
+		// the wrong agent on an issue. Refuse rather than pick.
+		if matches > 1 {
+			r.log().Warn("lark identity: bot name is ambiguous across installations",
+				"bot_name", botName, "matches", matches)
+		}
+		return Installation{}, false
+	}
+	return found, true
+}
+
+func (r *feishuIdentityResolver) chatBots(ctx context.Context, inst Installation, chatID string) ([]ChatBotMember, error) {
+	creds, err := installationCredentialsFor(inst, r.creds)
+	if err != nil {
+		return nil, err
+	}
+	return r.api.ListChatBots(ctx, creds, ChatID(chatID))
+}
+
+func (r *feishuIdentityResolver) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	return slog.Default()
 }
 
 // resolveAgentSender maps a bot sender to the Multica agent behind it. It runs
@@ -174,23 +229,21 @@ func (r *feishuIdentityResolver) senderBotAppID(ctx context.Context, inst engine
 // installer has left the workspace stops being able to initiate, which is the
 // same rule that applies to the human.
 func (r *feishuIdentityResolver) resolveAgentSender(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (engine.ResolvedIdentity, error) {
-	appID, ok := r.senderBotAppID(ctx, inst, msg)
+	if r.api == nil || !r.api.IsConfigured() || msg.Source.ChatID == "" {
+		return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+	}
+	self, err := r.store.GetLarkInstallation(ctx, inst.ID)
+	if err != nil {
+		return engine.ResolvedIdentity{}, err
+	}
+	botName, ok := r.senderBotName(ctx, self, msg.Source.ChatID, msg.Source.SenderID)
 	if !ok {
 		// Not a bot in this chat: an ordinary person who has not bound yet.
 		return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
 	}
-	src, err := r.store.GetLarkInstallationByAppID(ctx, appID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// A bot, but not one of this deployment's agents.
-			return engine.ResolvedIdentity{}, engine.ErrSenderIsBot
-		}
-		return engine.ResolvedIdentity{}, err
-	}
-	if src.WorkspaceID != inst.WorkspaceID {
-		// Another workspace's agent sharing the chat. It is a bot, so it gets
-		// the bot treatment rather than a binding invitation, but it is not an
-		// initiator here.
+	src, ok := r.installationForBotName(ctx, self, msg.Source.ChatID, botName)
+	if !ok {
+		// A bot, but not one of this workspace's agents.
 		return engine.ResolvedIdentity{}, engine.ErrSenderIsBot
 	}
 	if src.AgentID == inst.AgentID {

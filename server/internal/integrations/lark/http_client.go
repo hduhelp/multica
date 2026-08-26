@@ -1271,17 +1271,14 @@ func bindingPromptTemplate(bindURL string) (string, error) {
 	return string(raw), nil
 }
 
-// ListChatBots lists the bots that are members of a chat.
+// ListChatBots lists the bots that are members of a chat, via
+// GET /open-apis/im/v1/chats/{chat_id}/members/bots.
 //
-// Lark returns member_id_type=open_id ids in the CALLING app's namespace, and
-// alongside each bot an app_id — the only identifier for a bot that means the
-// same thing to every app. That is what makes this call the bridge between an
-// inbound sender open_id and the installation that owns that bot.
-//
-// A single page is fetched. A chat's bot roster is small (Lark caps bots per
-// chat well below the page size), and this runs only for a sender that had no
-// user binding, so paging would add a round-trip to a path that should stay
-// cheap.
+// Lark returns bot_id in the CALLING app's namespace plus bot_name, and
+// nothing else — there is no app_id and no cross-app identifier anywhere in
+// this API surface. Callers therefore join on the name, and must read both
+// sides of that join from this same roster so the two names come from one
+// source at one moment.
 func (c *httpAPIClient) ListChatBots(ctx context.Context, creds InstallationCredentials, chatID ChatID) ([]ChatBotMember, error) {
 	if chatID == "" {
 		return nil, errors.New("lark http client: missing chat_id")
@@ -1290,22 +1287,18 @@ func (c *httpAPIClient) ListChatBots(ctx context.Context, creds InstallationCred
 	if err != nil {
 		return nil, err
 	}
-	q := url.Values{}
-	q.Set("member_id_type", "open_id")
-	q.Set("member_type", "bot")
-	q.Set("page_size", "100")
-	path := "/open-apis/im/v1/chats/" + url.PathEscape(string(chatID)) + "/members?" + q.Encode()
+	// NOT im/v1/chats/{id}/members — that endpoint returns human members and
+	// silently ignores a member_type=bot filter, which is how the first
+	// attempt at this shipped a lookup that could never match anything.
+	path := "/open-apis/im/v1/chats/" + url.PathEscape(string(chatID)) + "/members/bots"
 
 	var resp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 		Data struct {
 			Items []struct {
-				MemberIDType string `json:"member_id_type"`
-				MemberID     string `json:"member_id"`
-				Name         string `json:"name"`
-				AppID        string `json:"app_id"`
-				TenantKey    string `json:"tenant_key"`
+				BotID   string `json:"bot_id"`
+				BotName string `json:"bot_name"`
 			} `json:"items"`
 		} `json:"data"`
 	}
@@ -1317,10 +1310,10 @@ func (c *httpAPIClient) ListChatBots(ctx context.Context, creds InstallationCred
 	}
 	out := make([]ChatBotMember, 0, len(resp.Data.Items))
 	for _, it := range resp.Data.Items {
-		if it.MemberID == "" || it.AppID == "" {
+		if it.BotID == "" {
 			continue
 		}
-		out = append(out, ChatBotMember{AppID: it.AppID, OpenID: it.MemberID, Name: it.Name})
+		out = append(out, ChatBotMember{OpenID: it.BotID, Name: it.BotName})
 	}
 	return out, nil
 }

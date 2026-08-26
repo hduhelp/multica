@@ -104,14 +104,13 @@ type APIClient interface {
 	ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error)
 
 	// ListChatBots lists the bots in a chat via
-	// GET /open-apis/im/v1/chats/{chat_id}/members?member_id_type=open_id&member_type=bot.
+	// GET /open-apis/im/v1/chats/{chat_id}/members/bots.
 	//
 	// It exists because a Lark open_id is scoped to the app that observes
 	// it: the same bot is a different open_id to every app that can see it,
 	// so an inbound sender id cannot be compared against the bot_open_id an
-	// installation stored for itself. This endpoint is the one place Lark
-	// hands back an app_id next to the open_id, and app_id IS comparable —
-	// it is the key installations are already routed on.
+	// installation stored for itself. The roster is the only view in which
+	// every installation can see the same bot at once.
 	ListChatBots(ctx context.Context, creds InstallationCredentials, chatID ChatID) ([]ChatBotMember, error)
 
 	// DownloadMessageResource downloads one binary resource attached to a
@@ -462,11 +461,10 @@ func (s *stubAPIClient) DeleteMessageReaction(ctx context.Context, p DeleteReact
 	return ErrAPIClientNotConfigured
 }
 
-// ChatBotMember is one bot in a chat's member list. app_id is the reason this
-// type exists: it is the only cross-app-stable identifier Lark returns for a
-// bot, so it is what lets one installation recognize another's bot.
+// ChatBotMember is one bot in a chat's roster, as one app sees it. OpenID is
+// meaningful only to the app that fetched it; Name is the same string for every
+// app, which is what makes it the join key.
 type ChatBotMember struct {
-	AppID  string
 	OpenID string
 	Name   string
 }
