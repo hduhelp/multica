@@ -2,8 +2,8 @@
 # The workflow rewrites these two lines, so the published chart pins the exact
 # images it just built. Individual image tags below still override them.
 release:
-  backendVersion: "0.6.2"
-  webVersion: "0.5.1"
+  backendVersion: "0.6.3"
+  webVersion: "0.5.2"
 
 # References to registry credentials already created in the target namespace.
 # The production cluster supplies its Aliyun ACR pull secret here.
@@ -126,9 +126,23 @@ backend:
   # against ONE database. The new pod migrates at boot, so the old pod serves
   # against the migrated schema until it is terminated — tens of seconds. That
   # is harmless for an additive migration and breaks the old pod on a
-  # destructive one (dropped column, narrowed type). Pin a release that carries
-  # destructive DDL back to Recreate; TestUpMigrationsAreAdditive in
-  # server/cmd/migrate lists which migrations those are.
+  # destructive one (dropped column, renamed column, narrowed type).
+  # TestUpMigrationsAreAdditive in server/cmd/migrate lists which migrations
+  # those are, so the question is answered at merge time.
+  #
+  # Recreate is NOT automatically the safer answer for such a release. Compare
+  # the two exposures with your registry's real pull time:
+  #
+  #   Recreate:      down for pull + migrate + boot, everything, no exceptions.
+  #   RollingUpdate: the migration runs after the pull and just before the new
+  #                  process starts, so the old pod meets the new schema only
+  #                  from then until it is terminated — boot plus the readiness
+  #                  probe, and only the queries that touch the changed table.
+  #
+  # Where the image pull is slow, RollingUpdate is the smaller loss even for a
+  # destructive migration: a minute of errors on one table beats a quarter hour
+  # of total outage. Reach for Recreate when the pull is fast, or when the
+  # changed table is one that every request touches.
   strategy:
     type: Recreate
   uploads:
