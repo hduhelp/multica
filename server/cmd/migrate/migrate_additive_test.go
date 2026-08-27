@@ -66,6 +66,10 @@ var knownDestructiveUpMigrations = map[string]bool{
 	"318_drop_workspace_mcp_config":              true,
 	"344_plugin_v2_reset":                        true,
 	"392_plugin_package_publishing":              true,
+	// Upstream renamed agent.starter_prompts -> conversation_starters. A
+	// rolling update runs this while the previous version is still selecting
+	// the old name, so the release carrying it needs the deploy note below.
+	"432_agent_conversation_starters_rename": true,
 }
 
 // A destructive migration is not forbidden — sometimes a column really has to

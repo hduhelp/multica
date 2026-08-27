@@ -18,10 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`f8ec870f3`** (2026-08-25) — merged |
+| **Last surveyed upstream** | **`5fa65bd12`** (2026-08-27) — merged |
+| **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `f8ec870f3` is upstream code we already have.
-> Next survey: `git log f8ec870f3..upstream/main`.
+> Everything at or below `5fa65bd12` is upstream code we already have.
+> Next survey: `git log 5fa65bd12..upstream/main`.
 
 ---
 
@@ -114,6 +115,41 @@ timeouts and the `ghsnapshot` trailing-refresh flake.
 
 ---
 
+## 2026-08-27 — second sync (`f8ec870f3..5fa65bd12`, 28 commits)
+
+10 conflicts, 4 of them sqlc output. Upstream renamed
+`agent.starter_prompts` to `conversation_starters`, which is most of the
+hand-resolved set; the rest were union merges where both sides had added
+to the same import list or const block.
+
+### Fork migrations moved to a reserved range
+
+Upstream claimed **432** — the number this fork's fixed-repo set had been
+moved to *two days earlier*, after upstream claimed 404/407/408. Chasing
+the next free number is a standing tax: it recurs every time upstream
+lands a migration, and each move re-runs the SQL under a new stem in
+every environment that already applied the old one.
+
+The set now lives at **9001-9005**, far above anything upstream will
+reach. Ordering is unaffected — these add columns to `agent` and create
+one table, all independent of upstream's schema. **New fork migrations
+belong in this range, not at the end of upstream's.**
+
+The re-run was verified in both directions again, and this time the
+idempotency fix from 0.6.2 is what made it a no-op: 432's two CHECK
+constraints already existed and were dropped-then-re-added rather than
+aborting the migration.
+
+### The additive lint earned its keep
+
+`TestUpMigrationsAreAdditive` failed on upstream's
+`432_agent_conversation_starters_rename` — a `RENAME COLUMN`. That is the
+first real catch since the lint landed, and it is exactly the case it was
+written for: a rolling update runs that rename while the previous version
+is still selecting the old column name.
+
+---
+
 ## Change log of this ledger
 
 - 2026-07-24 — Initial ledger. Surveyed `dbb515b7b..139cc8920` (67 commits).
@@ -123,3 +159,5 @@ timeouts and the `ghsnapshot` trailing-refresh flake.
   is now the table above, and the next survey starts from the new base.
 - 2026-08-26 — First post-re-fork sync. Merged `3c4288dde..f8ec870f3`
   (20 commits, 11 conflicts). Fork migrations renumbered 404-408 → 432-436.
+- 2026-08-27 — Second sync. Merged `f8ec870f3..5fa65bd12` (28 commits, 10
+  conflicts). Fork migrations moved to the reserved 9001+ range.

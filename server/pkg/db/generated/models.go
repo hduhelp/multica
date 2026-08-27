@@ -52,7 +52,7 @@ type Agent struct {
 	SystemKey              pgtype.Text `json:"system_key"`
 	DisabledRuntimeSkills  []byte      `json:"disabled_runtime_skills"`
 	ServiceTier            pgtype.Text `json:"service_tier"`
-	StarterPrompts         []byte      `json:"starter_prompts"`
+	ConversationStarters   []byte      `json:"conversation_starters"`
 	FixedRepoEnabled       bool        `json:"fixed_repo_enabled"`
 	FixedRepoPaths         []byte      `json:"fixed_repo_paths"`
 	FixedRepoVcsType       string      `json:"fixed_repo_vcs_type"`

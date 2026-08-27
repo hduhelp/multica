@@ -8,7 +8,7 @@ export type {
 } from "./issue-status";
 export type {
   Agent,
-  AgentStarterPrompt,
+  AgentConversationStarter,
   AgentStatus,
   AgentRuntimeMode,
   FixedRepoVcsType,
@@ -55,6 +55,7 @@ export type {
   SetAgentRuntimeSkillEnabledRequest,
   SkillFile,
   CreateSkillRequest,
+  SkillImportResult,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
   RuntimeUsage,
@@ -319,8 +320,11 @@ export type {
   BillingCheckoutSessionStatus,
   CreateBillingPortalSessionResponse,
   WorkspaceSubscriptionInterval,
+  WorkspaceEntitlementLimitMode,
+  WorkspaceEntitlementLimit,
   WorkspaceSubscriptionEntitlements,
   WorkspaceSubscriptionSummary,
+  IssueLimitUsage,
   WorkspaceSeatCapacity,
   WorkspaceSeatPurchaseSummary,
   WorkspaceSubscriptionPrice,
