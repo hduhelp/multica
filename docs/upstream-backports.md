@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`5fa65bd12`** (2026-08-27) — merged |
+| **Last surveyed upstream** | **`15280617b`** (2026-08-30) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `5fa65bd12` is upstream code we already have.
-> Next survey: `git log 5fa65bd12..upstream/main`.
+> Everything at or below `15280617b` is upstream code we already have.
+> Next survey: `git log 15280617b..upstream/main`.
 
 ---
 
@@ -150,6 +150,37 @@ is still selecting the old column name.
 
 ---
 
+## 2026-08-30 — third sync (`5fa65bd12..15280617b`, 28 commits)
+
+**Zero merge conflicts, and no migration collision** — upstream took
+437-440 and this fork sits at 9001+. The reserved range paid for itself
+on the very next sync; the two before it had cost a renumber each.
+
+One break the merge could not see: upstream refactored `gcRuntime` to
+return `(runtimeGCResult, error)` instead of four values, and this fork's
+fixed-repo lock-release backstop inside that function still returned the
+old shape. Git merged both sides cleanly because they touch different
+lines. A clean merge is not a compiling one — `go build` is what caught
+it, one line to fix.
+
+Upstream content: runtime GC for archived agents, a cheaper sweeper scan,
+issue-limit recovery UI, property filters for text/number/date/url, MCP
+config for the Oh-My-Pi runtime, a 2h agent inactivity budget, openclaw
+process-tree ownership, i18n for status/priority/squad labels, and PR
+head-SHA indexing.
+
+### A flake this ledger had been carrying is gone
+
+`TestInFlightOldHeadKeepsTrailingRefresh` in `internal/integrations/ghsnapshot`
+had been failing intermittently since the re-fork, confirmed each time as
+pre-existing rather than ours. Upstream's #7659 closes the pool after
+cleanups instead of before them. Three consecutive local runs pass.
+
+Still failing, untouched, still pre-existing: the `pkg/agent` codex
+timeouts.
+
+---
+
 ## Change log of this ledger
 
 - 2026-07-24 — Initial ledger. Surveyed `dbb515b7b..139cc8920` (67 commits).
@@ -161,3 +192,5 @@ is still selecting the old column name.
   (20 commits, 11 conflicts). Fork migrations renumbered 404-408 → 432-436.
 - 2026-08-27 — Second sync. Merged `f8ec870f3..5fa65bd12` (28 commits, 10
   conflicts). Fork migrations moved to the reserved 9001+ range.
+- 2026-08-30 — Third sync. Merged `5fa65bd12..15280617b` (28 commits, zero
+  conflicts, no migration collision). Upstream fixed the ghsnapshot flake.
