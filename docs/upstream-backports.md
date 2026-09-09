@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`b5a7ee1e0`** (2026-09-08) — merged |
+| **Last surveyed upstream** | **`9fab6da91`** (2026-09-09) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `b5a7ee1e0` is upstream code we already have.
-> Next survey: `git log b5a7ee1e0..upstream/main`.
+> Everything at or below `9fab6da91` is upstream code we already have.
+> Next survey: `git log 9fab6da91..upstream/main`.
 
 ---
 
@@ -271,3 +271,5 @@ that prompt would cap the noise without needing any scope.
   conflicts, no migration collision). Upstream fixed the ghsnapshot flake.
 - 2026-09-09 — Fourth sync. Merged `15280617b..b5a7ee1e0` (135 commits, 11
   conflicts, no migration collision).
+- 2026-09-10 — Fifth sync. Merged `b5a7ee1e0..9fab6da91` (15 commits, zero
+  conflicts, no hand resolution).
