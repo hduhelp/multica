@@ -222,6 +222,38 @@ handler failures were confirmed against the pre-merge commit — a
 different set fails there, which is the signature of suite-level
 contention rather than a regression. CI, which shards these, is green.
 
+## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
+
+One Multica agent @-mentioning another does **not** trigger a run. The
+receiving agent recognizes the @ fine; it cannot recognize that the sender
+is one of this workspace's own agents, so the message is dropped as an
+unbound stranger.
+
+The code for it shipped in 0.6.2 and is inert, not broken. Recognizing a
+bot sender requires reading the chat's bot roster
+(`im/v1/chats/{id}/members/bots`), which needs **`im:chat:readonly`** on
+**every** participating Lark app — the receiver reads the roster to learn
+the sender's name, and each candidate installation reads the same roster
+to identify itself by the `bot_open_id` it already stores. As of
+2026-09-09 only `cli_aa07a5faf578dd1c` has it; granting was judged not
+worth the effort. Granting it later (plus publishing a new app version)
+is the only step needed — no code change, no release.
+
+Why the roster and not an id comparison: a Lark open_id is scoped to the
+app that observes it, so the same bot is a different open_id to every app
+that can see it. `union_id` would be cross-app stable but cannot be
+obtained for a bot — `contact/v3/users/batch` rejects a bot open_id with
+41012, which is why every installation's `bot_union_id` is NULL. The
+roster's `bot_name` is the only identifier that means the same thing to
+every app.
+
+Known unfixed side effect: without that scope a bot sender is
+indistinguishable from an unbound person, so the receiving agent DMs it a
+"bind your account" card it can never act on. A per-open_id cooldown on
+that prompt would cap the noise without needing any scope.
+
+---
+
 ---
 
 ## Change log of this ledger
