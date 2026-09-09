@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`15280617b`** (2026-08-30) — merged |
+| **Last surveyed upstream** | **`b5a7ee1e0`** (2026-09-08) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `15280617b` is upstream code we already have.
-> Next survey: `git log 15280617b..upstream/main`.
+> Everything at or below `b5a7ee1e0` is upstream code we already have.
+> Next survey: `git log b5a7ee1e0..upstream/main`.
 
 ---
 
@@ -181,6 +181,49 @@ timeouts.
 
 ---
 
+## 2026-09-09 — fourth sync (`15280617b..b5a7ee1e0`, 135 commits)
+
+Nine days and 135 commits — five times the previous two syncs — for 11
+conflicts and 16 upstream migrations (441-456). None of them touched the
+reserved 9001+ range.
+
+Migration numbering has now been a non-event for two syncs running. The
+tax the first two paid was real: a renumber re-runs the SQL under a new
+stem in every environment that already applied the old one.
+
+### What the merge could not see
+
+Three breaks landed with zero conflict markers, all caught by build or
+typecheck rather than by git:
+
+| Break | How it happened |
+| --- | --- |
+| `Config.LogPath` vanished | The conflict was "our two lines vs upstream's one"; taking upstream's side wholesale dropped the fork's field. |
+| `NewFeishuResolverSet` arity | Upstream added a test calling it with six arguments; this fork's agent-sender work made it eight. |
+| `initiateListModels` split in half | A mechanical union cut through a method upstream had rewritten, leaving the fork's old signature stranded above the new body. |
+
+The same shape appeared again in `client.test.ts`, where a union dropped
+a `describe` block's closing braces. **A union merge is only safe when
+both sides are complete statements** — where a conflict cuts through one,
+it has to be resolved by reading.
+
+### Dead code the sync exposed
+
+`GetChannelInstallationByBotOpenID` and its store wrapper were removed.
+They were left behind by 0.6.2, which replaced open_id matching with the
+chat bot roster; upstream deleting an adjacent query surfaced them as an
+unreferenced pair.
+
+### Test suites
+
+`internal/handler` and `packages/views` both fail a rotating handful of
+tests when their whole suite runs in parallel, and pass in isolation. The
+handler failures were confirmed against the pre-merge commit — a
+different set fails there, which is the signature of suite-level
+contention rather than a regression. CI, which shards these, is green.
+
+---
+
 ## Change log of this ledger
 
 - 2026-07-24 — Initial ledger. Surveyed `dbb515b7b..139cc8920` (67 commits).
@@ -194,3 +237,5 @@ timeouts.
   conflicts). Fork migrations moved to the reserved 9001+ range.
 - 2026-08-30 — Third sync. Merged `5fa65bd12..15280617b` (28 commits, zero
   conflicts, no migration collision). Upstream fixed the ghsnapshot flake.
+- 2026-09-09 — Fourth sync. Merged `15280617b..b5a7ee1e0` (135 commits, 11
+  conflicts, no migration collision).

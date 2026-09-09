@@ -124,7 +124,7 @@ func TestFeishuSessionBinder_StartSessionMapping(t *testing.T) {
 		Sender:       binderUUID(7),
 		ClaimToken:   binderUUID(9),
 		Message: channel.InboundMessage{
-			MessageID: "om_2", Text: "first turn",
+			MessageID: "om_2", Text: "first turn", CommandText: "current instruction",
 			Source:  channel.Source{ChatID: "oc_chat", ChatType: channel.ChatTypeGroup, ThreadID: "omt_topic1"},
 			ReplyTo: &channel.ReplyCtx{RootID: "om_root"},
 		},
@@ -147,7 +147,7 @@ func TestFeishuSessionBinder_StartSessionMapping(t *testing.T) {
 	// different key than every reply inside the topic it creates, splitting one
 	// conversation across two sessions. The root message id is the one
 	// identifier that is stable from the opening turn onward.
-	if got.BindingKey != "oc_chat:om_root" || got.ThreadID != "omt_topic1" || got.Body != "first turn" || got.MessageID != "om_2" {
+	if got.BindingKey != "oc_chat:om_root" || got.ThreadID != "omt_topic1" || got.Body != "first turn" || got.CommandText != "current instruction" || got.MessageID != "om_2" {
 		t.Fatalf("start route/message mapping wrong: %+v", got)
 	}
 	if got.Sender != binderUUID(6) || got.Initiator != binderUUID(7) {
