@@ -16,15 +16,18 @@ Product contracts the runtime brief does not fully encode.
 The GitHub webhook runs two separate scans over an incoming PR. They are not the
 same gate and they read different fields.
 
-**Linking** scans the PR **title, body, OR branch** for a routable issue key
-(`PREFIX-NUMBER`, e.g. `MUL-123`). Each match writes an issue to PR link row.
-This is the link that `multica issue pull-requests` reads back — but see the
-reference-only rule below: a key that appears **only** as a bare mention in the
-body is linked yet hidden from that list.
+**Linking** scans three places for a routable issue key (`PREFIX-NUMBER`, e.g.
+`MUL-123`): the PR **title**, the **branch name**, and the **body right after a
+closing keyword**. Each match writes an issue to PR link row — the link that
+`multica issue pull-requests` reads back. A key that appears in the body as a
+bare mention, with nothing in the title or branch and no closing keyword, is a
+passing reference and links nothing.
 
 ```text
-MUL-123: add the thing the issue asks for        # key anywhere in title → links, shown
-agent/dana/mul-123-add-the-thing             # branch ref   → links, shown
+MUL-123: add the thing the issue asks for        # key anywhere in title → links
+agent/dana/mul-123-add-the-thing             # branch ref   → links
+Closes MUL-123                                   # body + closing keyword → links
+Related to MUL-123                               # body mention only → no link
 ```
 
 **Close intent** is stricter and is a separate scan over **title or body only —
@@ -37,7 +40,7 @@ auto-advances the issue to `done` when the PR merges.
 Closes MUL-123                                    # links AND records close intent
 Fixes MUL-123
 Resolves MUL-123
-Fix login MUL-123                                 # links only — keyword not adjacent
+Fix login MUL-123                                 # in a title: links, no close intent
 ```
 
 Consequence: a bare key in the title or a branch reference links the PR but does
@@ -45,18 +48,23 @@ not close the issue on merge. A closing keyword immediately adjacent to the issu
 records close intent; on merge, that close intent can move the linked issue to
 `done`.
 
-**Reference-only links (hidden from the PR list).** A key that appears **only**
-as a bare mention in the body — no closing keyword, and not in the title or
-branch — still writes a link row, but the row is flagged `reference_only` and
-**excluded from `multica issue pull-requests`** (and the issue's right-side PR
-list in the UI). This keeps passing mentions like `Related MUL-123` or
-`Follow up in MUL-123` from surfacing an unrelated PR as if it were working on
-that issue. To make a PR show up for an issue, put the key in the title, the
-branch, or after a closing keyword in the body — not as a loose body reference.
+**Passing mentions link nothing.** A key that appears **only** as a bare mention
+in the body — no closing keyword, and not in the title or branch — does not link
+the PR at all. This keeps `Related MUL-123` or `Follow up in MUL-123` from
+surfacing an unrelated PR as if it were working on that issue. To make a PR show
+up for an issue, put the key in the title, the branch, or after a closing keyword
+in the body — not as a loose body reference.
+
+While the PR is still open the link follows the live title and body: adding a key
+links it, and downgrading that key to a plain mention drops the link. Once the PR
+has merged or closed, existing links and their close-intent decision are frozen —
+but a PR that was never linked can still be linked by editing it, so a forgotten
+key is repairable after the fact. That late link does not move the issue to
+`done`; close intent is decided at merge time.
 
 ```text
-Closes MUL-123 in the body                        # links and shown
-Related to MUL-123 in the body (no title/branch)  # links but reference_only → hidden
+Closes MUL-123 in the body                        # links
+Related to MUL-123 in the body (no title/branch)  # no link
 ```
 
 ### Default for code-changing issue work
@@ -70,13 +78,13 @@ instead of pretending the run is complete.
 
 To make the PR show on the issue, put a routable issue key in the PR **title**
 (preferred) or the **branch**. A key that appears only as a bare mention in the
-body is reference-only and hidden from the issue PR list. Do not use a closing
-keyword (`Closes` / `Fixes` / `Resolves`) unless the issue should auto-advance
-to `done` on merge.
+body links nothing. Do not use a closing keyword (`Closes` / `Fixes` /
+`Resolves`) unless the issue should auto-advance to `done` on merge.
 
 ```text
-MUL-123: fix login redirect        # key anywhere in title → links and shown
+MUL-123: fix login redirect        # key anywhere in title → links
 Closes MUL-123                     # only when merge should mark the issue done
+Part of MUL-123                    # body mention only → no link at all
 ```
 
 In the final issue comment, include the PR URL when a PR exists. If the task did
@@ -119,10 +127,20 @@ Returns `{"pull_requests": [...]}`. Each element exposes:
 So "is it merged?" is `state == "merged"` (or `merged_at != null`); "is it still
 a draft?" is `state == "draft"`; coarse CI status is `checks_conclusion`.
 
-If the command returns no linked PRs after a PR was opened, the link scanner did
-not observe a routable issue key in the PR title/body/branch — or the only match
-was a bare body mention, which links as `reference_only` and is hidden from this
-list (see the reference-only rule above).
+If the command returns no linked PRs after a PR was opened, check the syntax
+first: the scanner needs a routable issue key in the PR title or branch, or one
+right after a closing keyword in the body — a bare body mention does not count
+(see the passing-mention rule above). When the syntax is the problem, editing the
+title or adding a closing keyword re-runs the scan.
+
+If the key is already written correctly and the list is still empty, stop editing
+the PR blind: another no-op edit cannot fix an integration that never received the
+event. Check the integration side instead — whether the app is installed on that
+repository, whether the installation is bound to this workspace, whether
+auto-linking is turned off for the workspace, and whether the event reached the
+platform at all. A delivery that failed is not retried on its own, but it can be
+redelivered once the receiving side is fixed. Report what you found in the result
+comment rather than repeating the edit.
 
 ## Listing and ordering issues
 
@@ -212,10 +230,21 @@ multica issue get <issue-id> --resolve-properties
 A status change is not cosmetic — the server enqueues or skips agent work based
 on it. These are the contracts, not advice.
 
-Read them as category rules: a custom status inherits its category's behavior in
-full. Two writes are literal-key exceptions, not category rules — the failed-task
-rollback below writes the literal `todo` key, and a merged PR with close intent
-writes the literal `done` key.
+The rules below name fixed built-in status keys, not category-wide behaviors.
+Custom statuses have only lifecycle semantics: unstarted, started, done
+(successful terminal), or closed (cancelled terminal). They do not inherit
+Backlog parking, In Review completion, Blocked failure, or In Progress recovery.
+Use the built-in key when its special behavior is needed. Built-in definitions
+cannot be edited or archived.
+
+Archive a custom status only after moving every issue off it, including
+completed/canceled issues. An occupied status returns HTTP 409 with code
+`issue_status_in_use` and `issue_count`; it remains active. Use Settings >
+View issues to inspect and move its issues, then retry. For terminal-status
+replacement, preserve the lifecycle meaning (`done` to `done`, `closed` to
+`closed`); do not reopen or cancel completed work just to retire a status.
+Archival does not move issues automatically. Historical issues on previously
+archived statuses remain readable via an explicit status filter.
 
 - **`backlog`** parks an agent-assigned issue: the assignee is set but no task
   fires. Moving `backlog → todo` (or any non-done/non-cancelled status) enqueues
@@ -353,10 +382,15 @@ multica issue children <parent-id>             # sub-issues grouped by stage
 multica issue status <stage-2-child-id> todo   # promote when its deps are met
 ```
 
-`issue children --output json` reports per-stage `done` counts. A custom status
-counts as done here when its category is `done` or `cancelled`, which is what
-`status_category` on each child carries. Read `status_category` rather than
-matching `status` against the built-in names.
+`issue children --output json` reports per-stage `done` counts, including custom
+statuses in terminal categories. When reading issue JSON, `status` is the exact
+key; `status_category` retains the seven-value API enum for installed clients:
+`backlog` / `todo` mean unstarted, `in_progress` / `in_review` / `blocked` mean
+started, `done` means successful terminal, and `cancelled` means cancelled
+terminal (the internal closed category). These values encode lifecycle, not
+built-in automation behavior. Check `status_category` for `done` / `cancelled`
+(or use the stage counts), not just the concrete `status` key, to recognize
+terminal children.
 
 Read each sub-issue's description before promoting and only promote items whose
 stated dependencies are met; if a description conflicts with the parent's
@@ -368,6 +402,7 @@ PR title (link the issue):
 
 ```text
 Fix login redirect                  # incorrect — no issue key, won't link
+Body-only "Part of MUL-123"         # incorrect — passing mention, won't link
 MUL-123: fix login redirect        # correct — links the PR
 ```
 

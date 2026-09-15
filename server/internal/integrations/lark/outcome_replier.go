@@ -279,7 +279,7 @@ func (r *LarkOutcomeReplier) sendIssueOutcome(ctx context.Context, inst Installa
 	// topics disabled, aggregated message) falls back to a chat-level
 	// send so the product result is not lost; transport/5xx/rate-limit
 	// failures stay failures rather than leaking into the group chat.
-	return sendWithThreadFallback(r.log, "send issue outcome text", inboundReplyTarget(msg), func(t ReplyTarget) error {
+	return sendWithReplyFallback(r.log, "send issue outcome text", inboundReplyTarget(msg), func(t ReplyTarget) error {
 		_, err := r.client.SendTextMessage(ctx, SendTextParams{
 			InstallationID: creds,
 			ChatID:         msg.ChatID,
@@ -290,19 +290,27 @@ func (r *LarkOutcomeReplier) sendIssueOutcome(ctx context.Context, inst Installa
 	})
 }
 
-// inboundReplyTarget threads an outbound reply off the inbound trigger
-// message. It mirrors threadReplyTarget (used by the event-driven Patcher)
-// but reads the live InboundMessage the replier already holds, so it needs
-// no DB round-trip: the reply anchors to the trigger message with
-// reply_in_thread — quoting the user and opening/continuing a 话题 — and only a
-// trigger with no message id falls through to the zero ReplyTarget (a fresh
-// chat-level send). sendWithThreadFallback downgrades to chat level if the
-// threaded reply is unsupported.
+// inboundReplyTarget mirrors threadReplyTarget (used by the event-driven
+// Patcher) case for case — topic trigger threads, ordinary group trigger
+// replies natively, p2p and untriggered sends stay chat-level — but
+// reads the live InboundMessage the replier already holds, so it needs
+// no DB round-trip. Keep the two in lockstep: a user cannot tell whether
+// an answer came from the synchronous replier or the task patcher, so
+// they must not place their replies differently.
 func inboundReplyTarget(msg InboundMessage) ReplyTarget {
-	if msg.MessageID != "" {
+	if msg.MessageID == "" {
+		return ReplyTarget{}
+	}
+	if msg.ThreadID != "" {
 		return ReplyTarget{MessageID: msg.MessageID, InThread: true}
 	}
-	return ReplyTarget{}
+	if msg.ChatType != ChatTypeGroup {
+		return ReplyTarget{}
+	}
+	// Same fork divergence as threadReplyTarget, and it has to be the same: a
+	// user cannot tell whether an answer came from this replier or the task
+	// patcher, so the two must not place their replies differently.
+	return ReplyTarget{MessageID: msg.MessageID, InThread: true}
 }
 
 // issueCreatedText composes the user-facing confirmation. Identifier
@@ -369,7 +377,7 @@ func (r *LarkOutcomeReplier) sendChatNotice(ctx context.Context, inst Installati
 	// Same classified fallback as sendIssueOutcome: only thread-reply
 	// failures that mean the topic cannot receive the message fall back
 	// to a chat-level send; ambiguous/transport failures stay failures.
-	return sendWithThreadFallback(r.log, "send notice card", inboundReplyTarget(msg), func(t ReplyTarget) error {
+	return sendWithReplyFallback(r.log, "send notice card", inboundReplyTarget(msg), func(t ReplyTarget) error {
 		_, err := r.client.SendInteractiveCard(ctx, SendCardParams{
 			InstallationID: creds,
 			ChatID:         msg.ChatID,

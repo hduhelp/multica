@@ -27,10 +27,13 @@ func runtimeCmdPendingKey(runtimeID string) string { return runtimeCmdPendingPre
 func runtimeCmdActiveKey(runtimeID string) string  { return runtimeCmdActivePrefix + runtimeID }
 
 type RedisRuntimeCommandStore struct {
-	rdb *redis.Client
+	// UniversalClient rather than *redis.Client so this store accepts whatever
+	// the router holds — upstream widened that to the interface, and the eight
+	// commands used here are all on it.
+	rdb redis.UniversalClient
 }
 
-func NewRedisRuntimeCommandStore(rdb *redis.Client) *RedisRuntimeCommandStore {
+func NewRedisRuntimeCommandStore(rdb redis.UniversalClient) *RedisRuntimeCommandStore {
 	return &RedisRuntimeCommandStore{rdb: rdb}
 }
 

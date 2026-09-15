@@ -70,6 +70,11 @@ var knownDestructiveUpMigrations = map[string]bool{
 	// rolling update runs this while the previous version is still selecting
 	// the old name, so the release carrying it needs the deploy note below.
 	"432_agent_conversation_starters_rename": true,
+	// Upstream drops issue_pull_request.reference_only. Its own header says it
+	// "may only run once every instance of the previous release is gone" — the
+	// previous release still names the column in two WHERE clauses. See the
+	// release commit for why this fork rolled it anyway.
+	"468_drop_reference_only_column": true,
 }
 
 // A destructive migration is not forbidden — sometimes a column really has to
