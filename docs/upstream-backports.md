@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`cf52ba33c`** (2026-09-15) — merged |
+| **Last surveyed upstream** | **`96aa80ff9`** (2026-09-16) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `cf52ba33c` is upstream code we already have.
-> Next survey: `git log cf52ba33c..upstream/main`.
+> Everything at or below `96aa80ff9` is upstream code we already have.
+> Next survey: `git log 96aa80ff9..upstream/main`.
 
 ---
 
@@ -333,6 +333,50 @@ before a sync lands: the two `check-ui-*.mjs` scripts, the three
 
 ---
 
+## 2026-09-16 — seventh sync (`cf52ba33c..96aa80ff9`, 25 commits)
+
+Two conflicts, both import-list unions in `packages/core/api`, and
+upstream did not touch `lark/` at all. 12 new migrations (479-490), none
+colliding with 9001+.
+
+### Upstream reversed a feature this fork had already applied
+
+475-477 were **emptied** and 478 reverted: the `triage` status-key
+reservation is gone (MUL-7400). Emptying a migration only reaches
+databases that have not run it, and upstream's own note says "production
+included, since releases deploy from tags and no tag carries them".
+
+**This fork deploys from main merges, so it is the other group** — 0.6.7
+ran 475-478 with their original bodies. Upstream wrote `490` for exactly
+that case, and it works: verified by migrating a database to the
+pre-merge state, confirming `issue_status_key_not_reserved` was present,
+then migrating forward and watching 490 drop it.
+
+**One residue 490 does not repair.** 477/478 also rewrote
+`issue_effective_status`, and this fork's copy keeps `'triage'` in the
+passthrough list where a fresh install does not. It only diverges for a
+custom status keyed exactly `triage` whose category is done/cancelled/
+closed: this fork would report it open, a fresh install would honour the
+category. Production has **zero** such statuses and zero issues with
+`status='triage'`, so it is inert today — but 490 removed the reservation
+that kept it impossible.
+
+Deliberately NOT fixed with a fork migration. A `9006` redefining a
+shared upstream function sorts after every upstream `4xx`, so a future
+upstream redefinition would be clobbered by it on fresh installs and in
+CI — a permanent hazard traded for an inert one. The repair belongs as a
+one-off against production instead; see the change log for when it ran.
+
+### Upstream's new French locale exposed fork debt
+
+`locales/parity.test.ts` failed on 38 keys with no `fr` translation, all
+of them this fork's: fixed repo (18), remote daemon control (13), skills
+directory import (7). Translated from the English source rather than left
+to fall back, because parity is enforced and would fail every sync from
+here on.
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
@@ -387,3 +431,6 @@ that prompt would cap the noise without needing any scope.
 - 2026-09-15 — Sixth sync. Merged `9fab6da91..cf52ba33c` (84 commits, 4
   conflicts). Upstream absorbed the Lark reply work; topic opening kept as a
   marked divergence.
+- 2026-09-16 — Seventh sync. Merged `cf52ba33c..96aa80ff9` (25 commits, 2
+  conflicts). Upstream reversed the triage reservation; 490 repaired this
+  fork's applied copy. French added for 38 fork-only keys.
