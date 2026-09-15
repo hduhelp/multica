@@ -477,7 +477,7 @@ function UrlForm({
               {candidates.map((c) => (
                 <label
                   key={c.url}
-                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted/50"
+                  className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-muted/50"
                 >
                   <Checkbox
                     checked={selected.has(c.url)}

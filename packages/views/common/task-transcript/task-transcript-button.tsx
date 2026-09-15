@@ -81,7 +81,7 @@ export function TaskTranscriptButton({
           disabled={loading}
           aria-label={title}
           className={cn(
-            "flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors disabled:opacity-50",
+            "flex items-center justify-center rounded-sm p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors disabled:opacity-50",
             className,
           )}
         >
