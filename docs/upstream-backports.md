@@ -222,6 +222,117 @@ handler failures were confirmed against the pre-merge commit — a
 different set fails there, which is the signature of suite-level
 contention rather than a regression. CI, which shards these, is green.
 
+## 2026-09-10 — fifth sync (`b5a7ee1e0..9fab6da91`, 15 commits)
+
+Zero conflicts and a clean build on the first try — the first sync since
+the re-fork where nothing had to be hand-resolved. No new migration
+numbers.
+
+### One data divergence worth knowing about
+
+Upstream edited migration **451**, which this fork had already applied in
+0.6.5, to drop its backfill:
+
+```sql
+-UPDATE agent_task_queue SET comment_thread_id = comment_thread_root_id(...)
++-- Existing rows intentionally retain a NULL thread scope.
+```
+
+A stem already in `schema_migrations` does not re-run, so the edit only
+reaches fresh installs. Production therefore has `comment_thread_id`
+populated on historical rows where an upstream install would have NULL.
+That is a superset, not a conflict: 452's unique index built without
+collision, and upstream's own note says pre-migration tasks drain under
+the claim fence regardless. Nothing to undo — recorded so a future schema
+comparison against upstream does not read as drift needing repair.
+
+---
+
+## 2026-09-15 — sixth sync (`9fab6da91..cf52ba33c`, 84 commits)
+
+22 new migrations (457-478), none colliding with 9001+. Four conflicts,
+three of them in the Lark outbound path — because upstream built its own
+version of the threading feature this fork carries.
+
+### Upstream has absorbed most of the Lark reply work
+
+`sendWithThreadFallback` is now upstream's `sendWithReplyFallback`, same
+body; `threadReplyTarget` was generalized. Post-merge, upstream's
+`outbound.go` has no function this fork lacks, and this fork has two it
+does not: `sendAgentReply` / `sendPlainReply`, the adaptive format (plain
+prose as text, markdown as a headerless schema-2.0 card) with a degrade
+path when the card BUILD fails. This fork's `defaultRenderer` also points
+at the real product card; upstream's is still the placeholder its own
+comment says will be replaced.
+
+### Three things upstream does better, now inherited
+
+1. **Per-task trigger snapshot** (migration 461). This fixes a real bug in
+   the fork's design, which read `binding.LastMessageID` — one row per
+   chat_session, so only ever the LATEST trigger. A debounced or slow run
+   would reply to and quote a message that arrived after the one it was
+   answering. `binding` is now built from `channel_task_delivery`.
+   Upstream's migration header records the two wrong designs they passed
+   through first, including why resolving the open_id from
+   `initiator_user_id` at send time is unsound: `channel_user_binding` is
+   unique on `(installation_id, channel_user_id)`, not on the Multica user.
+2. **Native `<at>` mention** of the asker, never inferred from the "@name"
+   in the model's prose — duplicate or guessed names would ping the wrong
+   colleague. Two wire shapes: `<at user_id=…>` for text, `<at id=…>` for
+   the schema-2.0 card.
+3. **`topicSendWithoutTrigger`** — a failure mode this fork had not
+   considered. A topic-isolated session with no trigger falls through to
+   the chat-level send, so an answer to a question asked in one topic
+   surfaces in the main group. Upstream declines to send instead.
+
+### The divergence that stays: this fork opens the 话题
+
+Upstream replies natively in an ordinary group and leaves
+`reply_in_thread` false, so the whole group shares ONE session. This fork
+sends it true: `larkSessionRouting` keys a group conversation on the
+thread ROOT message, and the root only becomes a thread because of that
+send. Marked `FORK DIVERGENCE` in both `threadReplyTarget` and
+`inboundReplyTarget`, which stay in lockstep because a user cannot tell
+which one answered them.
+
+**Decided 2026-09-15: keep it.** Upstream's native mention solves "which
+question is this answering", which was half the reason for topics. It does
+not solve the other half — in a busy group upstream's model puts every
+member's questions in one session, so context bleeds between them. The
+cost of keeping it is conflicts in this file on syncs that touch the reply
+path (3 of 4 this time) plus a one-time rekey of live sessions if it is
+ever reversed. Do not re-litigate per sync; reopen only if topic-per-@
+turns out to bother users.
+
+### Two breaks the merge did not show
+
+Both surfaced only at build/test, not as conflicts: `sendAgentReply` still
+called the old `sendWithThreadFallback` name, and
+`NewRedisRuntimeCommandStore` took `*redis.Client` where upstream widened
+the router's client to `redis.UniversalClient`. The store was widened to
+match rather than cast at the call site.
+
+### The additive lint fired, and the migration says so itself
+
+`468_drop_reference_only_column` drops a column whose own header reads:
+"It may only run once every instance of the previous release is gone: an
+older instance still names the column in its link INSERT." The deployed
+release did read it — two `WHERE … AND NOT ipr.reference_only` clauses in
+`github.sql` — and the code that stops using it arrived in this same
+merge. Rolled anyway; see the release commit for the comparison. Result
+was zero 5xx.
+
+### A CI check that does not run locally
+
+`scripts/check-ui-radius-tokens.mjs` arrived in this sync and failed on
+two of this fork's own components. It is a standalone node script in the
+`frontend-build` job, outside `typecheck` / `test`, so a local green run
+proves nothing about it. The rest of that job's steps are worth running
+before a sync lands: the two `check-ui-*.mjs` scripts, the three
+`scripts/*.test.sh`, and `pnpm generate:reserved-slugs`.
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
