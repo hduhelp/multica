@@ -364,8 +364,21 @@ that kept it impossible.
 Deliberately NOT fixed with a fork migration. A `9006` redefining a
 shared upstream function sorts after every upstream `4xx`, so a future
 upstream redefinition would be clobbered by it on fresh installs and in
-CI — a permanent hazard traded for an inert one. The repair belongs as a
-one-off against production instead; see the change log for when it ran.
+CI — a permanent hazard traded for an inert one.
+
+**Repaired as a one-off on 2026-09-17** with a bare
+`CREATE OR REPLACE FUNCTION` carrying migration 478's current body, under
+the same `lock_timeout` / `statement_timeout` that migration uses.
+Catalog-only and idempotent. Dry-run first against a local database built
+to the pre-merge state, which then matched a fresh one byte for byte;
+production now does too (`pg_get_functiondef` diffed clean). Preconditions
+re-checked immediately before: zero statuses keyed `triage`/`triage_2`,
+zero issues in that status, one overload of the function.
+
+Because it is not a migration, nothing records it in `schema_migrations`.
+If production is ever rebuilt from migrations it will come out correct
+anyway — the stale body only ever existed on databases that ran the
+pre-MUL-7400 bodies of 477/478, which no longer exist in the tree.
 
 ### Upstream's new French locale exposed fork debt
 
@@ -434,3 +447,5 @@ that prompt would cap the noise without needing any scope.
 - 2026-09-16 — Seventh sync. Merged `cf52ba33c..96aa80ff9` (25 commits, 2
   conflicts). Upstream reversed the triage reservation; 490 repaired this
   fork's applied copy. French added for 38 fork-only keys.
+- 2026-09-17 — One-off production repair: `issue_effective_status` rewritten
+  to migration 478's current body, dropping the stale `'triage'` passthrough.
