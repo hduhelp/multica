@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`7e4758ac1`** (2026-09-16) — merged |
+| **Last surveyed upstream** | **`9e7e529b7`** (2026-09-17) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `7e4758ac1` is upstream code we already have.
-> Next survey: `git log 7e4758ac1..upstream/main`.
+> Everything at or below `9e7e529b7` is upstream code we already have.
+> Next survey: `git log 9e7e529b7..upstream/main`.
 
 ---
 
@@ -413,6 +413,33 @@ silently.** Build and vet are not optional after a clean merge.
 
 ---
 
+## 2026-09-18 — ninth sync (`7e4758ac1..9e7e529b7`, 9 commits)
+
+No new migrations, no `lark/` churn, one conflicted file.
+
+`chat-message-list.tsx` is the first conflict of the shape "two features
+in the same place". Upstream reworked the copy button around
+`extractCopyText` and a new `MessageCopyButton({content})` signature; this
+fork had added the transcript button beside it and a second prop riding
+the same chain. Three hunks were prop-chain unions; two had to be merged
+by hand so upstream's `copyContent` and this fork's `transcriptTaskId`
+gate both survive, including in the early return.
+
+### Local views results were unusable this session
+
+Two full runs reported 232 and 346 failures — both because a second
+`pnpm test` was started while one was already running (the first command
+had `pnpm test` appended to it). A third, run alone, still reported 66
+across unrelated files, each of which passes in isolation on a loaded
+machine.
+
+CI shards this suite and has been green across every sync where local
+runs were noisy, while catching the things that were real (the radius
+token check, a zeroclaw flake). **Treat CI as the gate for
+`packages/views`; a local count is only meaningful at zero.**
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
@@ -474,3 +501,5 @@ that prompt would cap the noise without needing any scope.
   to migration 478's current body, dropping the stale `'triage'` passthrough.
 - 2026-09-17 — Eighth sync. Merged `96aa80ff9..7e4758ac1` (22 commits, 1
   conflict).
+- 2026-09-18 — Ninth sync. Merged `7e4758ac1..9e7e529b7` (9 commits, 1
+  conflicted file).
