@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`96aa80ff9`** (2026-09-16) — merged |
+| **Last surveyed upstream** | **`7e4758ac1`** (2026-09-16) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `96aa80ff9` is upstream code we already have.
-> Next survey: `git log 96aa80ff9..upstream/main`.
+> Everything at or below `7e4758ac1` is upstream code we already have.
+> Next survey: `git log 7e4758ac1..upstream/main`.
 
 ---
 
@@ -390,6 +390,29 @@ here on.
 
 ---
 
+## 2026-09-17 — eighth sync (`96aa80ff9..7e4758ac1`, 22 commits)
+
+One conflict, nine migrations (491-499), no collision, no `lark/` churn.
+Mostly the issue-status category contract landing in stages plus four new
+indexes.
+
+**README.** Upstream added a star-history badge pointing at
+`multica-ai/multica`. That is their repository's own promotion and does
+not belong in a fork, so the conflict resolved to this fork's nav line
+and the badge was dropped — not a domain rewrite like the earlier README
+conflicts.
+
+**One break with no conflict marker, the fourth sync running.**
+`buildClaimedTaskResponse` gained an `issueSnapshot []byte` return
+(migration 499), and this fork's four fixed-repo failure returns inside
+it still had the old arity. Caught by `go build`.
+
+That pattern is now reliable enough to plan around: **this fork's code
+sits inside upstream functions, so a signature change upstream breaks it
+silently.** Build and vet are not optional after a clean merge.
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
@@ -449,3 +472,5 @@ that prompt would cap the noise without needing any scope.
   fork's applied copy. French added for 38 fork-only keys.
 - 2026-09-17 — One-off production repair: `issue_effective_status` rewritten
   to migration 478's current body, dropping the stale `'triage'` passthrough.
+- 2026-09-17 — Eighth sync. Merged `96aa80ff9..7e4758ac1` (22 commits, 1
+  conflict).
