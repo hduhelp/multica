@@ -433,10 +433,18 @@ had `pnpm test` appended to it). A third, run alone, still reported 66
 across unrelated files, each of which passes in isolation on a loaded
 machine.
 
+The cause was confirmed afterwards, not inferred: the harness killed
+several idle background tasks with "system is running low on memory"
+while that run was in flight. A vitest worker pool that loses memory
+under it fails tests that pass alone.
+
 CI shards this suite and has been green across every sync where local
 runs were noisy, while catching the things that were real (the radius
 token check, a zeroclaw flake). **Treat CI as the gate for
-`packages/views`; a local count is only meaningful at zero.**
+`packages/views`; a local count is only meaningful at zero.** Before
+reading a large local failure count as a regression, check free memory
+and whether anything else heavy is running — Docker, Postgres and a Go
+suite together are enough to push this box over.
 
 ---
 
