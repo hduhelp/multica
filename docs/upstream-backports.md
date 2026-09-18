@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`9e7e529b7`** (2026-09-17) — merged |
+| **Last surveyed upstream** | **`2df765a3c`** (2026-09-18) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `9e7e529b7` is upstream code we already have.
-> Next survey: `git log 9e7e529b7..upstream/main`.
+> Everything at or below `2df765a3c` is upstream code we already have.
+> Next survey: `git log 2df765a3c..upstream/main`.
 
 ---
 
@@ -448,6 +448,25 @@ suite together are enough to push this box over.
 
 ---
 
+## 2026-09-19 — tenth sync (`9e7e529b7..2df765a3c`, 19 commits)
+
+Zero conflicts, no new migrations, no `lark/` churn, and — for the first
+time in six syncs — nothing broke at build either. Upstream's v0.5.0
+release entry is in this range.
+
+Upstream content: mention picker at any token boundary, durable terminal
+report replay, Codex delta streaming end to end, DingTalk quoted-answer
+context, issue filtering by parent project status, a bounded hermes
+shutdown, and an editable existing autopilot schedule. One feature
+(MUL-7300 Quick Create original input) arrives already reverted.
+
+The memory check added after the ninth sync was used here: free memory
+and process count were confirmed before each suite, the Go and TS suites
+were run one at a time, and the local counts came back sane — six desktop
+failures in the combined run, 661/661 when that package ran alone.
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
@@ -511,3 +530,5 @@ that prompt would cap the noise without needing any scope.
   conflict).
 - 2026-09-18 — Ninth sync. Merged `7e4758ac1..9e7e529b7` (9 commits, 1
   conflicted file).
+- 2026-09-19 — Tenth sync. Merged `9e7e529b7..2df765a3c` (19 commits, zero
+  conflicts).
