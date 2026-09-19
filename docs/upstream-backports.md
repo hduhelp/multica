@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`2df765a3c`** (2026-09-18) — merged |
+| **Last surveyed upstream** | **`8c4f4328f`** (2026-09-19) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `2df765a3c` is upstream code we already have.
-> Next survey: `git log 2df765a3c..upstream/main`.
+> Everything at or below `8c4f4328f` is upstream code we already have.
+> Next survey: `git log 8c4f4328f..upstream/main`.
 
 ---
 
@@ -467,6 +467,15 @@ failures in the combined run, 661/661 when that package ran alone.
 
 ---
 
+## 2026-09-20 — eleventh sync (`2df765a3c..8c4f4328f`, 3 commits)
+
+Zero conflicts, clean build, one new migration (500) well clear of 9001+,
+no `lark/` churn. Transcript tool results now pair by call identity, the
+cancelled-work warning matches its headline, and a handler test reads the
+clock from the database instead of the host.
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
@@ -531,4 +540,6 @@ that prompt would cap the noise without needing any scope.
 - 2026-09-18 — Ninth sync. Merged `7e4758ac1..9e7e529b7` (9 commits, 1
   conflicted file).
 - 2026-09-19 — Tenth sync. Merged `9e7e529b7..2df765a3c` (19 commits, zero
+  conflicts).
+- 2026-09-20 — Eleventh sync. Merged `2df765a3c..8c4f4328f` (3 commits, zero
   conflicts).
