@@ -3,7 +3,7 @@
 # images it just built. Individual image tags below still override them.
 release:
   backendVersion: "0.6.13"
-  webVersion: "0.5.13"
+  webVersion: "0.5.14"
 
 # References to registry credentials already created in the target namespace.
 # The production cluster supplies its Aliyun ACR pull secret here.
