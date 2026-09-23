@@ -345,6 +345,6 @@ describe("AgentsPage docs link", () => {
 
     expect(
       screen.getByRole("link", { name: "En savoir plus →" }),
-    ).toHaveAttribute("href", "https://multica.ai/docs/fr/agents");
+    ).toHaveAttribute("href", "https://multica.hduhelp.com/docs/fr/agents");
   });
 });

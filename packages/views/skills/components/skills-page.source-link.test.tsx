@@ -227,6 +227,6 @@ describe("SkillsPage docs link", () => {
 
     expect(
       screen.getByRole("link", { name: "En savoir plus →" }),
-    ).toHaveAttribute("href", "https://multica.ai/docs/fr/skills");
+    ).toHaveAttribute("href", "https://multica.hduhelp.com/docs/fr/skills");
   });
 });
