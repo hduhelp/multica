@@ -75,6 +75,12 @@ var knownDestructiveUpMigrations = map[string]bool{
 	// previous release still names the column in two WHERE clauses. See the
 	// release commit for why this fork rolled it anyway.
 	"468_drop_reference_only_column": true,
+	// Drops the table of upstream's reverted comment-steering feature
+	// (migrations 507/508, no longer in the tree). IF EXISTS, referenced by no
+	// release of this fork, and never created here — this fork synced past
+	// that window without ever applying 507/508 — so it is a no-op in
+	// production and safe to roll.
+	"534_drop_comment_agent_delivery": true,
 }
 
 // A destructive migration is not forbidden — sometimes a column really has to

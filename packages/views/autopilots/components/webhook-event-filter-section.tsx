@@ -20,7 +20,9 @@ export function WebhookEventFilterSection({
   const [newActions, setNewActions] = useState("");
   const docsHref = i18n.language?.startsWith("zh")
     ? `https://multica.hduhelp.com/docs/zh/autopilots#${encodeURIComponent("事件过滤")}`
-    : "https://multica.hduhelp.com/docs/autopilots#event-filters";
+    : i18n.language?.startsWith("fr")
+      ? `https://multica.hduhelp.com/docs/fr/autopilots#${encodeURIComponent("filtres-dévénements")}`
+      : "https://multica.hduhelp.com/docs/autopilots#event-filters";
 
   const addFilter = () => {
     const event = newEvent.trim();

@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`8c4f4328f`** (2026-09-19) — merged |
+| **Last surveyed upstream** | **`0516dd57c`** (2026-09-23) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `8c4f4328f` is upstream code we already have.
-> Next survey: `git log 8c4f4328f..upstream/main`.
+> Everything at or below `0516dd57c` is upstream code we already have.
+> Next survey: `git log 0516dd57c..upstream/main`.
 
 ---
 
@@ -476,6 +476,58 @@ clock from the database instead of the host.
 
 ---
 
+## 2026-09-24 — twelfth sync (`8c4f4328f..0516dd57c`, 78 commits)
+
+13 conflicts, 41 new migrations (501-544; 507/508 absent because upstream
+reverted them), none in 9001+. Upstream's `lark/` change is additive
+(`PeekEventType`, logging only).
+
+### Upstream centralized the CLI install command
+
+`INSTALL_CMD` was hardcoded in three places (runtimes "add computer",
+onboarding, landing download). Upstream replaced all three with
+`packages/views/common/cli-install-command.tsx`, added a Windows
+`install.ps1` variant, and hardcoded **`multica-ai/multica`** in it. The
+three conflicts were only the deletions; taking them as-is would have
+silently pointed every install surface back at upstream's scripts. The
+shared constant now points at `hduhelp/multica`. Both scripts' own headers
+were checked and already fetch this fork's releases, including
+`install.ps1`, which no earlier sync had looked at.
+
+Three tests restated the upstream `install.ps1` URL as a literal. They now
+read `CLI_INSTALL_COMMANDS` instead, so the next change of install source
+cannot break them. Two of those failures were initially hidden: turbo
+stopped after the first failing package, so `packages/views` never ran in
+the combined pass.
+
+### Clean merges bypass rebranding
+
+Rebranding only ever happened while resolving a conflict. A link upstream
+adds in a file this fork never touched merges cleanly and keeps
+`multica.ai`. This sync surfaced `lark-tab.tsx` (new), plus
+`dingtalk-tab.tsx`, `telegram-tab.tsx` and the desktop update
+notification's changelog link, all of which had been leaking since an
+earlier sync. Not changed here — see the next section for why.
+
+### This deployment does not host the docs site
+
+`multica.hduhelp.com/docs/*` is 404 — or, for paths like `/docs/agents`,
+the web app treating `docs` as a workspace slug and returning its generic
+shell ("Project Management for Human + Agent Teams", not "Agents | Multica
+Docs"). Only `multica-backend` and `multica-frontend` are deployed;
+`apps/docs` never has been. `/changelog` is real (served by the web app).
+
+So every docs link the rebrand layer points at this domain — twelve in
+production code as of this sync — is broken, and has been since the
+re-fork. Syncs have been faithfully preserving that. The alternatives are
+upstream's docs (accurate for the same product, but upstream's site and
+branding) or deploying `apps/docs` here. That is a product decision and
+was not made inside a sync: this merge kept doc links exactly as they
+were before it, and did not "fix" the clean-merged `multica.ai` doc links
+into 404s.
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
@@ -543,3 +595,6 @@ that prompt would cap the noise without needing any scope.
   conflicts).
 - 2026-09-20 — Eleventh sync. Merged `2df765a3c..8c4f4328f` (3 commits, zero
   conflicts).
+- 2026-09-24 — Twelfth sync. Merged `8c4f4328f..0516dd57c` (78 commits, 13
+  conflicts). Install command re-pointed after upstream centralized it;
+  found that this deployment serves no docs site.
