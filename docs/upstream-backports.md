@@ -18,11 +18,11 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`0516dd57c`** (2026-09-23) — merged |
+| **Last surveyed upstream** | **`b115ec80f`** (2026-10-12) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
-> Everything at or below `0516dd57c` is upstream code we already have.
-> Next survey: `git log 0516dd57c..upstream/main`.
+> Everything at or below `b115ec80f` is upstream code we already have.
+> Next survey: `git log b115ec80f..upstream/main`.
 
 ---
 
@@ -528,6 +528,55 @@ into 404s.
 
 ---
 
+## 2026-10-13 — thirteenth sync (`0516dd57c..b115ec80f`, 114 commits, two merges)
+
+Landed as two merges: `..e31da86c9` was resolved in a session that ended
+mid-merge and committed in the next once its resolutions checked out, then
+`..b115ec80f` went on top. 28 migrations (545-572), none in 9001+.
+
+### The Opus 4.6 effort fix is retired — superseded, and it nearly went silently
+
+`claudeModelEffortAllow` kept `--effort xhigh` away from Opus/Sonnet 4.6,
+which silently degrade it to high. Upstream rewrote
+`annotateClaudeThinking` and the map's only call site vanished. An unused
+package-level var compiles, so this was **not** a build break: the fix
+would have gone inert with every check green. Its own regression test did
+catch it, but only when run by exact name — a broad `-run` regex matched
+neither "Thinking" nor "Effort" in `TestClaudeOpus46RejectsXhigh`.
+
+Not re-wired, because upstream's replacement is better: live Claude
+discovery reads `supportedEffortLevels` per model from the CLI's control
+protocol, and the static fallback deliberately over-offers and lets the
+CLI judge (MUL-7691). Map and fork test removed. Upstream's
+`TestClaudeStaticCatalogOffersHelpSupersetOnEveryModel` would have failed
+had it been re-wired.
+
+**General lesson:** after a clean merge, check that fork code inside
+upstream functions is still *reached*, not only that it compiles.
+
+### `release.yml` is a path collision, twice this sync
+
+In this fork it is the service-release manifest; upstream's tag-driven
+client release lives in `client-release.yml`. Both upstream edits were
+taken by keeping ours and porting the change: same-ref serialization and
+`EP_GH_IGNORE_TIME` (MUL-7683), then the Go `~1.26.9` security floor. The
+service images already build on `golang:1.26.9` via the Dockerfile.
+
+### A new upstream lint found three fork leaks
+
+`TestInternalServerErrorsDoNotExposeCause` rejects raw errors in 500
+responses. All three hits were fork code — the fixed-repo cleanup-script
+clear and both remote-daemon command loads. Each now returns stable copy
+and logs the cause.
+
+### Upstream's large Lark change merged clean and left the fork intact
+
+19 files of typing-indicator rework. Verified afterwards: both
+`FORK DIVERGENCE` reply targets, the agent-sender resolver, the source
+stamp and the card flattener are all present and their tests pass.
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
@@ -598,3 +647,5 @@ that prompt would cap the noise without needing any scope.
 - 2026-09-24 — Twelfth sync. Merged `8c4f4328f..0516dd57c` (78 commits, 13
   conflicts). Install command re-pointed after upstream centralized it;
   found that this deployment serves no docs site.
+- 2026-10-13 — Thirteenth sync. Merged to `b115ec80f` (114 commits, two
+  merges). Retired the superseded Opus 4.6 effort fix.

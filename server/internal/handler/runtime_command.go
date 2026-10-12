@@ -3,12 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -299,7 +301,8 @@ func (h *Handler) GetRuntimeCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	cmd, err := h.RuntimeCommandStore.Get(r.Context(), chi.URLParam(r, "commandId"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load command: "+err.Error())
+		slog.Warn("load runtime command failed", append(logger.RequestAttrs(r), "error", err, "command_id", chi.URLParam(r, "commandId"))...)
+		writeError(w, http.StatusInternalServerError, "failed to load command")
 		return
 	}
 	if cmd == nil || cmd.RuntimeID != uuidToString(rt.ID) {
@@ -322,7 +325,8 @@ func (h *Handler) ReportRuntimeCommandResult(w http.ResponseWriter, r *http.Requ
 	commandID := chi.URLParam(r, "commandId")
 	existing, err := h.RuntimeCommandStore.Get(r.Context(), commandID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load command: "+err.Error())
+		slog.Warn("load runtime command failed", append(logger.RequestAttrs(r), "error", err, "command_id", commandID)...)
+		writeError(w, http.StatusInternalServerError, "failed to load command")
 		return
 	}
 	if existing == nil || existing.RuntimeID != runtimeID {

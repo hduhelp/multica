@@ -231,7 +231,7 @@ The docs are also available in [简体中文](https://multica.hduhelp.com/docs/z
 
 Contributors: start with the [Contributing Guide](CONTRIBUTING.md).
 
-**Prerequisites:** [Node.js](https://nodejs.org/) 22, [pnpm](https://pnpm.io/) 10.28.2, [Go](https://go.dev/) 1.26.6, [Docker](https://www.docker.com/)
+**Prerequisites:** [Node.js](https://nodejs.org/) 22, [pnpm](https://pnpm.io/) 10.28.2, [Go](https://go.dev/) 1.26.9, [Docker](https://www.docker.com/)
 
 ```bash
 make dev
