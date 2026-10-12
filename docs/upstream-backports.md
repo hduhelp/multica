@@ -575,6 +575,18 @@ and logs the cause.
 `FORK DIVERGENCE` reply targets, the agent-sender resolver, the source
 stamp and the card flattener are all present and their tests pass.
 
+### The web image broke on a mobile pnpm patch
+
+Upstream `a3ff0f504` declared a root `patchedDependencies` entry whose patch
+file lives in `apps/mobile/patches/`. pnpm reads every declared patch on
+install, so `Dockerfile.web`'s `pnpm install --frozen-lockfile` died with
+ENOENT. CI passed and the break only appeared in the Release workflow.
+Upstream's own `Dockerfile.web` has the same gap. Fixed by whitelisting
+`!/apps/mobile/patches/` in `.dockerignore`, where `/apps/*` had excluded it,
+and copying the directory in the deps stage. Web 0.5.15 was never published;
+web 0.5.16 / chart 0.3.17 shipped instead. If upstream adds more root-level
+patches outside `apps/web`, the same fix applies.
+
 ---
 
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
