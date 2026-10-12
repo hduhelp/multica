@@ -70,7 +70,7 @@ func TestChannelStartTitleCommandMappingDB(t *testing.T) {
 				// all a session-binder test needs.
 				binder = lark.NewFeishuResolverSet(nil, session, nil, nil, nil, nil, nil, nil).Session
 			case "telegram":
-				binder = telegram.NewTelegramResolverSet(q, pool, nil, nil).Session
+				binder = telegram.NewTelegramResolverSet(q, pool, nil, nil, nil).Session
 			case "dingtalk":
 				binder = dingtalk.NewDingTalkResolverSet(q, pool, nil, nil, nil, nil).Session
 			case "slack":
