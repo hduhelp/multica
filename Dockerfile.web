@@ -5,6 +5,10 @@ WORKDIR /app
 
 # Copy workspace config and all package.json files for dependency resolution
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json .npmrc ./
+# Root package.json declares a pnpm patchedDependency whose patch file lives
+# under apps/mobile. pnpm reads every declared patch on install, even for a
+# package this image never installs, so the file has to exist in the context.
+COPY apps/mobile/patches/ apps/mobile/patches/
 COPY apps/web/package.json apps/web/
 # postinstall runs fumadocs-mdx which reads apps/web/source.config.ts
 COPY apps/web/source.config.ts apps/web/source.config.ts
