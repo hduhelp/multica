@@ -18,7 +18,7 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`b115ec80f`** (2026-10-12) — merged |
+| **Last surveyed upstream** | **`7ab92d762`** (2026-10-13) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
 > Everything at or below `b115ec80f` is upstream code we already have.
@@ -589,6 +589,23 @@ patches outside `apps/web`, the same fix applies.
 
 ---
 
+## 2026-10-14 — fourteenth sync (`b115ec80f..7ab92d762`, 14 commits)
+
+Two conflicts, no new migrations.
+
+- **`.dockerignore`**: upstream `765267e12` fixed the same mobile-patch build
+  break we had just fixed. Took upstream's rules wholesale and dropped our
+  duplicate `COPY` from `Dockerfile.web`, which had auto-merged next to
+  upstream's own copy. Our fork carries no Docker divergence for this any more.
+- **`cmd_daemon.go` foreground start**: upstream added a per-profile daemon
+  lock and a dynamically bound health port. Kept both that block and our
+  `cfg.LogPath` line for remote log fetch. Our remote restart reuses upstream's
+  `triggerRestart`/`RestartBinary` path, whose child spawn sets
+  `MULTICA_DAEMON_HANDOFF=1`, so the restarted daemon takes over the lock. No
+  fork code reads the health port.
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
@@ -661,3 +678,5 @@ that prompt would cap the noise without needing any scope.
   found that this deployment serves no docs site.
 - 2026-10-13 — Thirteenth sync. Merged to `b115ec80f` (114 commits, two
   merges). Retired the superseded Opus 4.6 effort fix.
+- 2026-10-14 — Fourteenth sync. Merged `b115ec80f..7ab92d762` (14 commits, 2
+  conflicts). Upstream's mobile-patch Docker fix replaced ours.
