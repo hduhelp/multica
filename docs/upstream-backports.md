@@ -18,7 +18,7 @@ Then triage into the tables below and bump the `Last surveyed upstream` marker.
 | Field | Value |
 | --- | --- |
 | Fork point (re-fork base) | `3c4288dde` (2026-08-24, #7503) |
-| **Last surveyed upstream** | **`7ab92d762`** (2026-10-13) — merged |
+| **Last surveyed upstream** | **`18fa9f728`** (2026-10-17) — merged |
 | **Fork migration range** | **9001+** — never renumber into upstream's range again |
 
 > Everything at or below `b115ec80f` is upstream code we already have.
@@ -606,6 +606,30 @@ Two conflicts, no new migrations.
 
 ---
 
+## 2026-10-18 — fifteenth sync (`7ab92d762..18fa9f728`, 18 commits)
+
+One conflict. Migrations 573–582 are new (580 is unused upstream).
+
+- **`onboarding_shim.go`**: upstream `86020b88a` deleted the pre-v3 desktop
+  onboarding shim. Our only edit there added the fixed-repo fields to its
+  `CreateAgent` call, so the file was deleted. `agent.go` is now the only
+  `CreateAgentParams` call site, and it sets `FixedRepoPaths` and
+  `FixedRepoVcsType`.
+- **Migrations 573–582** (project workflows): a new `issue_workflow` table,
+  concurrent indexes, and nullable columns on `project` and
+  `agent_task_queue`. 579 replaces `capture_issue_wakeup`; no fork migration
+  redefines a function, so fresh installs and production converge.
+- **Comment cleanup `231dedb55`** touched hundreds of files. A line-level
+  check confirmed every non-comment line the fork added survived, and all
+  three `FORK DIVERGENCE` markers remain.
+- **Git ≥ 2.40 for local-worktree resume**: `6d5cdcbed` uses
+  `git merge-tree --write-tree`. Daemons on older Git fail that path with an
+  explicit error and keep the branch. Locally, `/usr/local/bin/git` 2.33
+  shadows `/usr/bin/git` 2.50, so put `/usr/bin` first when running execenv
+  tests.
+
+---
+
 ## Dormant: agent-to-agent triggering (needs a Lark scope nobody has granted)
 
 One Multica agent @-mentioning another does **not** trigger a run. The
@@ -680,3 +704,5 @@ that prompt would cap the noise without needing any scope.
   merges). Retired the superseded Opus 4.6 effort fix.
 - 2026-10-14 — Fourteenth sync. Merged `b115ec80f..7ab92d762` (14 commits, 2
   conflicts). Upstream's mobile-patch Docker fix replaced ours.
+- 2026-10-18 — Fifteenth sync. Merged `7ab92d762..18fa9f728` (18 commits, 1
+  conflict). Project workflows (migrations 573–582); onboarding shim deleted.
