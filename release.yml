@@ -12,6 +12,6 @@
 #   ALIYUN_REGISTRY_USERNAME
 #   ALIYUN_REGISTRY_PASSWORD
 
-backend: 0.6.15
-web: 0.5.17
-chart: 0.3.18
+backend: 0.6.16
+web: 0.5.18
+chart: 0.3.19
